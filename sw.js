@@ -2,7 +2,7 @@
 // Strategy: cache the shell on install. Network-first for navigations,
 // cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v2';
+const CACHE_NAME = 'habit-rpg-v3';
 const SHELL = [
   './',
   './index.html',
@@ -19,18 +19,23 @@ const SHELL = [
   './icons/icon-512.png',
 ];
 
-const IDB_URL = 'https://cdn.jsdelivr.net/npm/idb@8/+esm';
+const CDN_URLS = [
+  'https://cdn.jsdelivr.net/npm/idb@8/+esm',
+  'https://cdn.tailwindcss.com',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
     await cache.addAll(SHELL);
-    try {
-      const req = new Request(IDB_URL, { mode: 'cors', credentials: 'omit' });
-      const res = await fetch(req);
-      if (res && res.ok) await cache.put(req, res);
-    } catch (err) {
-      console.warn('[sw] failed to cache idb CDN module:', err);
+    for (const url of CDN_URLS) {
+      try {
+        const req = new Request(url, { mode: 'cors', credentials: 'omit' });
+        const res = await fetch(req);
+        if (res && res.ok) await cache.put(req, res);
+      } catch (err) {
+        console.warn('[sw] failed to cache CDN module:', url, err);
+      }
     }
   })());
   self.skipWaiting();
