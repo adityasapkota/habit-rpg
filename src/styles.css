@@ -1,0 +1,9 @@
+/* Custom styles that don't fit Tailwind utilities. */
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
