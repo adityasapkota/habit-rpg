@@ -12,13 +12,32 @@
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col">
-  <main class="flex-1 flex flex-col items-center justify-center p-8 text-center">
-    <h1 class="text-4xl font-semibold tracking-tight">Habit RPG</h1>
-    <p class="mt-3 text-slate-400 text-sm">Phase 1 skeleton. Add to Home Screen to install.</p>
+  <header class="sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-800">
+    <div class="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
+      <h1 class="text-lg font-semibold tracking-tight">Habit RPG</h1>
+      <div class="flex items-center gap-3">
+        <span id="coin-pill" class="rounded-full bg-amber-500/20 text-amber-300 text-sm px-3 py-1">🪙 0</span>
+        <button id="settings-btn" class="text-slate-400 hover:text-slate-100 text-xl leading-none" aria-label="Settings">⚙</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 w-full max-w-md mx-auto px-4 pb-32">
+    <section id="screen-today" class="screen pt-6"></section>
+    <section id="screen-add-habit" class="screen hidden pt-6"></section>
+    <section id="screen-confirm" class="screen hidden pt-6"></section>
   </main>
+
+  <button id="fab"
+    class="fixed bottom-6 right-6 w-14 h-14 rounded-full bg-emerald-500 text-slate-900 text-3xl font-bold shadow-lg hover:bg-emerald-400 active:scale-95 transition flex items-center justify-center"
+    aria-label="Add habit">+</button>
+
   <footer class="text-center text-xs text-slate-500 py-3">
     build <span id="build-tag">__BUILD_TIMESTAMP__</span>
+    <span class="mx-2">·</span>
+    <span class="text-slate-600">Reminders are best-effort on web.</span>
   </footer>
+
   <script type="module" src="./src/app.js"></script>
 </body>
 </html>

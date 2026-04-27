@@ -6,4 +6,16 @@
 html, body {
   margin: 0;
   padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input[type='time'] {
+  color-scheme: dark;
+}
+
+/* Tailwind Play CDN doesn't always pick up dynamic peer-checked combinations
+   reliably on first paint; prepay them so the radio/checkbox styling sticks. */
+.peer:checked ~ label,
+.peer:checked + label {
+  outline: none;
 }

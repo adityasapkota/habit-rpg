@@ -1,8 +1,8 @@
 // Habit RPG service worker.
 // Strategy: cache the shell on install. Network-first for navigations,
-// cache-first for static src/icons/manifest assets. No third-party caching.
+// cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v1';
+const CACHE_NAME = 'habit-rpg-v2';
 const SHELL = [
   './',
   './index.html',
@@ -19,10 +19,20 @@ const SHELL = [
   './icons/icon-512.png',
 ];
 
+const IDB_URL = 'https://cdn.jsdelivr.net/npm/idb@8/+esm';
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL))
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.addAll(SHELL);
+    try {
+      const req = new Request(IDB_URL, { mode: 'cors', credentials: 'omit' });
+      const res = await fetch(req);
+      if (res && res.ok) await cache.put(req, res);
+    } catch (err) {
+      console.warn('[sw] failed to cache idb CDN module:', err);
+    }
+  })());
   self.skipWaiting();
 });
 
@@ -40,8 +50,6 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
-
   const isNavigation =
     req.mode === 'navigate' ||
     url.pathname.endsWith('/') ||
@@ -66,8 +74,10 @@ self.addEventListener('fetch', (event) => {
     caches.match(req).then((cached) => {
       if (cached) return cached;
       return fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+        if (res && res.status === 200 && (res.type === 'basic' || res.type === 'cors')) {
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+        }
         return res;
       });
     })
