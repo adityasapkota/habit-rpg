@@ -61,6 +61,10 @@ export async function createHabit({ name, schedule, customDays, reminderTime, mi
     minimumVersion: cleanMin,
     createdAt: Date.now(),
     archived: false,
+    // Phase 6: track milestone lengths (3/7/30/90) already awarded so a
+    // streak reset + re-cross doesn't pay the bonus twice. Spec wording:
+    // "one-time, when crossed."
+    milestonesAwarded: [],
   };
   const db = await getDB();
   await db.put('habits', habit);
@@ -202,9 +206,17 @@ export async function setCompletion(habitId, dateStr, status) {
     newStreak = streakAsOf(habit, byDate, dateStr);
 
     if (status === 'completed') {
-      milestone = crossedMilestone(prevStreak, newStreak);
-      if (milestone) {
-        newRow.coinsEarned += milestone.bonus;
+      const candidate = crossedMilestone(prevStreak, newStreak);
+      if (candidate) {
+        const awarded = Array.isArray(habit.milestonesAwarded) ? habit.milestonesAwarded : [];
+        if (!awarded.includes(candidate.length)) {
+          milestone = candidate;
+          newRow.coinsEarned += milestone.bonus;
+          habit.milestonesAwarded = [...awarded, candidate.length];
+          await habitsStore.put(habit);
+        }
+        // Else: this milestone length was already paid — skip the bonus
+        // (and the toast). Forward-only.
       }
     }
 

@@ -2,7 +2,7 @@
 // Strategy: cache the shell on install. Network-first for navigations,
 // cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v9';
+const CACHE_NAME = 'habit-rpg-v10';
 const SHELL = [
   './',
   './index.html',
@@ -21,37 +21,33 @@ const SHELL = [
   './icons/icon-512.png',
 ];
 
-// CDN modules. Each entry picks the request mode that the CDN actually
-// supports for cross-origin caching:
-//   - jsdelivr serves CORS-enabled responses, so we cache as `cors`.
-//   - cdn.tailwindcss.com 302-redirects to a versioned URL that lacks
-//     Access-Control-Allow-Origin headers. A `cors` request blocks the
-//     script in the page or fails cache.put() because of the redirect URL
-//     mismatch. We use `no-cors` and accept opaque responses; the browser
-//     still executes opaque scripts from cache fine.
-const CDN_REQUESTS = [
-  { url: 'https://cdn.jsdelivr.net/npm/idb@8/+esm', mode: 'cors' },
-  { url: 'https://cdn.tailwindcss.com',              mode: 'no-cors' },
-];
+// idb is the IndexedDB layer — without it the app can't boot at all,
+// even online. It's served from jsdelivr with proper CORS headers, so
+// we treat it as a required atomic precache entry alongside SHELL.
+const IDB_URL = 'https://cdn.jsdelivr.net/npm/idb@8/+esm';
+
+// Tailwind Play CDN 302-redirects to a versioned URL that lacks
+// Access-Control-Allow-Origin headers, so it can't ride along on the
+// atomic addAll (would TypeError on URL mismatch / opaque rejection). We
+// fetch it as no-cors and store opaque, best-effort. If the network is
+// unreachable on first install, online use still works (browser will
+// load it directly the next time) and offline use degrades to unstyled
+// — but install must NOT fail just because Tailwind didn't precache.
+const TAILWIND_URL = 'https://cdn.tailwindcss.com';
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    // Local shell is required — install fails if it can't cache. CDNs are
-    // best-effort: a transient CDN failure (or a Tailwind redirect quirk)
-    // must NOT prevent the SW from activating, otherwise users get stuck
-    // on the previous SW. The fetch handler retries CDN URLs on demand.
-    await cache.addAll(SHELL);
-    for (const { url, mode } of CDN_REQUESTS) {
-      try {
-        const req = new Request(url, { mode, credentials: 'omit' });
-        const res = await fetch(req);
-        if (res && (res.ok || res.type === 'opaque')) {
-          await cache.put(req, res);
-        }
-      } catch (err) {
-        console.warn('[sw] failed to precache CDN module:', url, err);
+    const idbReq = new Request(IDB_URL, { mode: 'cors', credentials: 'omit' });
+    await cache.addAll([...SHELL, idbReq]);
+    try {
+      const tailwindReq = new Request(TAILWIND_URL, { mode: 'no-cors', credentials: 'omit' });
+      const res = await fetch(tailwindReq);
+      if (res && (res.ok || res.type === 'opaque')) {
+        await cache.put(tailwindReq, res);
       }
+    } catch (err) {
+      console.warn('[sw] failed to precache Tailwind:', err);
     }
   })());
   self.skipWaiting();
@@ -137,7 +133,9 @@ self.addEventListener('fetch', (event) => {
       fetch(req)
         .then((res) => {
           const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+          caches.open(CACHE_NAME)
+            .then((cache) => cache.put(req, copy))
+            .catch((err) => console.warn('[sw] nav cache.put failed:', err));
           return res;
         })
         .catch(() =>
@@ -157,7 +155,11 @@ self.addEventListener('fetch', (event) => {
         // scripts loaded from cache, which keeps offline reload working.
         if (res && (res.status === 200 || res.type === 'opaque')) {
           const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+          caches.open(CACHE_NAME)
+            .then((cache) => cache.put(req, copy))
+            // QuotaExceeded or storage-pressure failures must not bubble
+            // up as an unhandled rejection.
+            .catch((err) => console.warn('[sw] cache.put failed:', err));
         }
         return res;
       });

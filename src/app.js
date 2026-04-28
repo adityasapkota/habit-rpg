@@ -120,11 +120,21 @@ async function renderConfirmModal(jar) {
       try {
         await confirmDeposit(depositId, state, partialAmount);
         const fresh = await getActiveJar();
-        if (fresh) await renderConfirmModal(fresh);
-        else {
+        if (!fresh) {
           showScreen('today');
           await refreshToday();
+          return;
         }
+        const remaining = await listPendingDeposits(fresh.id);
+        if (remaining.length === 0) {
+          // Auto-close the modal once the user has cleared every pending
+          // deposit — leaving them on an empty screen feels stuck.
+          showScreen('today');
+          await refreshToday();
+          showToast('All transfers reviewed', { tone: 'emerald' });
+          return;
+        }
+        await renderConfirmModal(fresh);
       } catch (err) {
         console.error('[app] confirm failed:', err);
         showToast('Could not confirm: ' + err.message, { tone: 'amber' });
@@ -167,10 +177,16 @@ async function refreshReminderBanner() {
 let bannerTimer = null;
 function startBannerPolling() {
   if (bannerTimer) clearInterval(bannerTimer);
-  // Poll every 60s while the document is visible so a reminder time that
-  // passes WITH the app already open still surfaces the banner.
+  // Poll every 60s while the document is visible. Two responsibilities:
+  //   1. Catch a reminder time that passes while the app is open.
+  //   2. Catch midnight while the app is open — re-run rollover and
+  //      refresh Today so habits don't go stale on yesterday's view.
   bannerTimer = setInterval(() => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+    if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+    const today = todayString();
+    if (lastRenderedDate && today !== lastRenderedDate) {
+      maybeRolloverAfterResume().catch((err) => console.warn('[app] poll midnight:', err));
+    } else {
       refreshReminderBanner().catch((err) => console.warn('[app] poll banner:', err));
     }
   }, 60000);
@@ -207,10 +223,20 @@ async function showAddHabit() {
       await refreshToday();
     },
     onSave: async (data) => {
-      // Phase 5: validate jar fields BEFORE creating the habit so a
-      // bad jar doesn't leave a dangling habit and a closed form.
-      // createJar validates everything except linkedHabitId, so we run
-      // it after createHabit but rethrow on failure to keep the form open.
+      // Permission prompt: fire BEFORE the IDB writes so the browser
+      // still sees the user-activation token from this submit click.
+      // Some Safari builds suppress requestPermission() if it lands
+      // after a microtask chain. The flow doesn't depend on the result
+      // — the in-app banner fallback works regardless.
+      let permissionResult = currentPermission();
+      if (data.reminderTime && isNotificationSupported() && permissionResult === 'default') {
+        try {
+          permissionResult = await requestPermission();
+        } catch (err) {
+          console.warn('[app] permission flow failed:', err);
+        }
+      }
+
       const habit = await createHabit(data);
       if (data.jar && !existingJar) {
         try {
@@ -222,19 +248,7 @@ async function showAddHabit() {
           throw err;
         }
       }
-      // First habit created with a reminder time triggers the permission
-      // prompt. We don't block save on the answer — the in-app banner
-      // fallback works either way.
-      if (data.reminderTime && isNotificationSupported() && currentPermission() === 'default') {
-        try {
-          const result = await requestPermission();
-          if (result === 'granted') {
-            await scheduleForHabit(habit);
-          }
-        } catch (err) {
-          console.warn('[app] permission flow failed:', err);
-        }
-      } else if (data.reminderTime && currentPermission() === 'granted') {
+      if (data.reminderTime && permissionResult === 'granted') {
         await scheduleForHabit(habit).catch((err) =>
           console.warn('[app] schedule failed:', err)
         );

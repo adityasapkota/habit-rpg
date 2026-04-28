@@ -97,10 +97,15 @@ function jarCard(jar, pending, callbacks) {
     `Recorded ${fmt(jar.recordedBalance)} / Target ${fmt(jar.targetAmount)} · Confirmed ${fmt(jar.confirmedBalance)}`));
 
   const actions = el('div', 'flex gap-2 pt-1');
-  if (pending.length > 0) {
-    const confirmBtn = el('button', 'flex-1 rounded bg-emerald-500 text-slate-900 text-xs font-semibold py-1.5');
+  // Spec (02_DESIGN_DAY1.md L134): show the button whenever recorded >
+  // confirmed, not only when there are pending deposits — partial-confirmed
+  // deposits leave a real gap the user may want to revisit.
+  if (jar.recordedBalance > jar.confirmedBalance) {
+    const confirmBtn = el('button', 'flex-1 rounded bg-emerald-500 text-slate-900 text-xs font-semibold py-1.5 disabled:opacity-50');
     confirmBtn.type = 'button';
-    confirmBtn.textContent = `Confirm transfers (${pending.length})`;
+    confirmBtn.textContent = pending.length > 0
+      ? `Confirm transfers (${pending.length})`
+      : 'Review transfers';
     confirmBtn.addEventListener('click', () => callbacks.onOpenConfirm(jar));
     actions.appendChild(confirmBtn);
   }
@@ -162,14 +167,42 @@ function confirmRow(jar, dep, callbacks) {
   partialBtn.type = 'button';
   partialBtn.textContent = 'Partial';
   partialBtn.addEventListener('click', () => {
-    const v = prompt(`Partial amount for ${jar.currency}${dep.amount}?`, '0');
-    if (v == null) return;
-    const num = Number(v);
-    if (!Number.isFinite(num) || num < 0 || num > dep.amount) {
-      alert('Enter a number between 0 and ' + dep.amount);
-      return;
-    }
-    callbacks.onResolve(dep.id, 'partial', num);
+    // Inline an input row so partial amount works in standalone PWA modes
+    // where window.prompt() is unreliable (some iOS standalone builds
+    // suppress it entirely).
+    if (card.querySelector('[data-role="partial-row"]')) return;
+    const row = el('div', 'flex gap-2 items-center pt-1');
+    row.dataset.role = 'partial-row';
+    const input = el('input', 'flex-1 rounded bg-slate-900 border border-slate-700 px-2 py-1 text-sm');
+    input.type = 'number';
+    input.min = '0';
+    input.max = String(dep.amount);
+    input.step = '1';
+    input.placeholder = `0 – ${dep.amount}`;
+    row.appendChild(input);
+
+    const ok = el('button', 'rounded bg-sky-500 text-slate-900 text-xs font-medium px-3 py-1');
+    ok.type = 'button';
+    ok.textContent = 'Save';
+    ok.addEventListener('click', () => {
+      const num = Number(input.value);
+      if (!Number.isFinite(num) || num < 0 || num > dep.amount) {
+        input.focus();
+        input.select();
+        return;
+      }
+      callbacks.onResolve(dep.id, 'partial', Math.floor(num));
+    });
+    row.appendChild(ok);
+
+    const cancelInline = el('button', 'rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs px-2 py-1');
+    cancelInline.type = 'button';
+    cancelInline.textContent = '×';
+    cancelInline.addEventListener('click', () => row.remove());
+    row.appendChild(cancelInline);
+
+    card.appendChild(row);
+    input.focus();
   });
   buttons.appendChild(partialBtn);
 
@@ -334,7 +367,10 @@ function numberInput(name, opts = {}) {
   const i = el('input', 'w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 focus:border-emerald-500 outline-none');
   i.type = 'number';
   i.name = name;
-  i.min = '0';
+  // Schema requires positive integers; surface that in the browser's
+  // built-in validation so users see the constraint before save.
+  i.min = '1';
+  i.step = '1';
   if (opts.placeholder) i.placeholder = opts.placeholder;
   return i;
 }
