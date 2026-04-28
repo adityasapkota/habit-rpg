@@ -94,12 +94,14 @@ export async function listPendingDeposits(jarId) {
   return pending.filter((d) => d.jarId === jarId);
 }
 
-// Validates jar fields. Schema (02_DESIGN_DAY1.md) treats amounts as
-// integers; we round-down rather than reject decimals so a user typing
-// 100.5 doesn't get confused, but we reject zero/negative/NaN.
+// Schema (02_DESIGN_DAY1.md) requires integer amounts. Reject decimals,
+// zero, negatives, NaN, and Infinity outright so the data layer can't
+// silently coerce a typo like "100.5" into a different value.
 function toPositiveInt(value, label) {
-  const n = Math.floor(Number(value));
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`${label} must be a positive whole number.`);
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+    throw new Error(`${label} must be a positive whole number.`);
+  }
   return n;
 }
 

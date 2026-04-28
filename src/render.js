@@ -312,8 +312,19 @@ function jarFormSection() {
 
   wrap.appendChild(inner);
 
+  // Disabled fields are excluded from HTML5 validation, so toggling
+  // `disabled` (rather than just `hidden`) keeps `required` from blocking
+  // submit when the jar section is collapsed.
+  function setJarFieldsEnabled(enabled) {
+    for (const inp of inner.querySelectorAll('input, select')) {
+      inp.disabled = !enabled;
+    }
+  }
+  setJarFieldsEnabled(false);
+
   enableInput.addEventListener('change', () => {
     inner.classList.toggle('hidden', !enableInput.checked);
+    setJarFieldsEnabled(enableInput.checked);
   });
 
   return wrap;
