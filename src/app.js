@@ -2,7 +2,17 @@
 // Owns SW registration, screen routing, and top-level event handlers.
 import { ensureUserState, resetAllData } from './db.js';
 import { createHabit, setCompletion, rolloverMissed, todayString } from './habits.js';
-import { renderToday, renderAddHabit, showToast } from './render.js';
+import { renderToday, renderAddHabit, renderReminderBanner, showToast } from './render.js';
+import {
+  isNotificationSupported,
+  currentPermission,
+  requestPermission,
+  scheduleForHabit,
+  cancelForHabit,
+  dueRemindersToday,
+  snoozeInApp,
+  dismissBannerForToday,
+} from './notifications.js';
 
 const screens = {
   today: document.getElementById('screen-today'),
@@ -31,6 +41,12 @@ async function refreshToday() {
     onCompletion: async (habitId, status) => {
       try {
         const result = await setCompletion(habitId, todayString(), status);
+        // Cancel any pending OS notification when the user takes a real
+        // action (Done or Min). Skip cancel for 'missed' since that's just
+        // a reset — the user may still want the next reminder.
+        if (status === 'completed' || status === 'minimum') {
+          await cancelForHabit(habitId, todayString());
+        }
         // Re-render first so the streak/coin UI is current before the toast.
         await refreshToday();
         if (result.comebackApplied) {
@@ -48,6 +64,32 @@ async function refreshToday() {
       }
     },
   });
+  await refreshReminderBanner();
+}
+
+async function refreshReminderBanner() {
+  try {
+    const due = await dueRemindersToday();
+    renderReminderBanner(due, {
+      onSnooze: (dueList) => {
+        let any = false;
+        for (const d of dueList) {
+          const remaining = snoozeInApp(d.habitId);
+          if (remaining >= 0) any = true;
+          if (remaining === 0) {
+            showToast(`Snooze cap reached for ${d.name}`, { tone: 'amber' });
+          }
+        }
+        if (any) refreshReminderBanner();
+      },
+      onDismiss: () => {
+        dismissBannerForToday();
+        renderReminderBanner([], {});
+      },
+    });
+  } catch (err) {
+    console.error('[app] reminder banner failed:', err);
+  }
 }
 
 async function maybeRolloverAfterResume() {
@@ -70,7 +112,24 @@ async function showAddHabit() {
       await refreshToday();
     },
     onSave: async (data) => {
-      await createHabit(data);
+      const habit = await createHabit(data);
+      // First habit created with a reminder time triggers the permission
+      // prompt. We don't block save on the answer — the in-app banner
+      // fallback works either way.
+      if (data.reminderTime && isNotificationSupported() && currentPermission() === 'default') {
+        try {
+          const result = await requestPermission();
+          if (result === 'granted') {
+            await scheduleForHabit(habit);
+          }
+        } catch (err) {
+          console.warn('[app] permission flow failed:', err);
+        }
+      } else if (data.reminderTime && currentPermission() === 'granted') {
+        await scheduleForHabit(habit).catch((err) =>
+          console.warn('[app] schedule failed:', err)
+        );
+      }
       showScreen('today');
       await refreshToday();
     },

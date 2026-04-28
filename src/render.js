@@ -119,6 +119,49 @@ function updateCoinPill(coins) {
   if (pill) pill.textContent = `🪙 ${coins}`;
 }
 
+// Render or remove the in-app reminder banner. `due` is the array returned
+// by dueRemindersToday(). `callbacks.onSnooze(habitId)` and
+// `callbacks.onDismiss()` wire the action buttons.
+export function renderReminderBanner(due, callbacks) {
+  const existing = document.getElementById('reminder-banner');
+  if (existing) existing.remove();
+  if (!due || due.length === 0) return;
+
+  const banner = el('div',
+    'fixed left-1/2 -translate-x-1/2 top-16 max-w-md w-[calc(100%-2rem)] z-40 ' +
+    'rounded-lg bg-amber-500 text-slate-900 p-3 shadow-lg');
+  banner.id = 'reminder-banner';
+  banner.setAttribute('role', 'status');
+  banner.setAttribute('aria-live', 'polite');
+
+  if (due.length === 1) {
+    banner.appendChild(el('p', 'text-sm font-semibold', `Reminder: ${due[0].name}`));
+    banner.appendChild(el('p', 'text-xs', `min: ${due[0].minimum} · was due ${due[0].reminderTime}`));
+  } else {
+    banner.appendChild(el('p', 'text-sm font-semibold', `${due.length} reminders due`));
+    const list = due.map((d) => `${d.name} (${d.reminderTime})`).join(' · ');
+    banner.appendChild(el('p', 'text-xs', list));
+  }
+
+  const actions = el('div', 'flex gap-2 mt-2');
+  const snooze = el('button',
+    'flex-1 rounded bg-amber-600 text-slate-100 text-xs font-medium py-1 hover:bg-amber-700 disabled:opacity-40');
+  snooze.type = 'button';
+  snooze.textContent = 'Snooze 10 min';
+  snooze.addEventListener('click', () => callbacks.onSnooze(due));
+  actions.appendChild(snooze);
+
+  const dismiss = el('button',
+    'flex-1 rounded bg-slate-800 text-slate-100 text-xs font-medium py-1 hover:bg-slate-700');
+  dismiss.type = 'button';
+  dismiss.textContent = 'Dismiss for today';
+  dismiss.addEventListener('click', () => callbacks.onDismiss());
+  actions.appendChild(dismiss);
+  banner.appendChild(actions);
+
+  document.body.appendChild(banner);
+}
+
 // Lightweight, self-removing toast. Stacks vertically if multiple are queued
 // (one per call). aria-live polite so screen readers can read milestones.
 let toastStackOffset = 0;

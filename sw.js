@@ -2,7 +2,7 @@
 // Strategy: cache the shell on install. Network-first for navigations,
 // cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v6';
+const CACHE_NAME = 'habit-rpg-v7';
 const SHELL = [
   './',
   './index.html',
@@ -64,6 +64,46 @@ self.addEventListener('activate', (event) => {
     )
   );
   self.clients.claim();
+});
+
+// Notification interaction. Snooze action re-schedules a follow-up 10 min
+// later (Triggers API only — best effort). Tapping the body focuses an
+// existing app window or opens a new one.
+self.addEventListener('notificationclick', (event) => {
+  const notification = event.notification;
+  const data = notification.data || {};
+  const action = event.action;
+  notification.close();
+
+  if (action === 'snooze' && data.habitId && typeof TimestampTrigger !== 'undefined') {
+    event.waitUntil((async () => {
+      try {
+        await self.registration.showNotification(data.name || 'Habit reminder', {
+          body: data.minimum ? `Time to: ${data.minimum}` : 'Reminder',
+          tag: `habit-rpg-${data.habitId}-${data.date}-snooze-${Date.now()}`,
+          data,
+          actions: [{ action: 'snooze', title: 'Snooze 10 min' }],
+          // eslint-disable-next-line no-undef
+          showTrigger: new TimestampTrigger(Date.now() + 10 * 60 * 1000),
+        });
+      } catch (err) {
+        console.warn('[sw] snooze schedule failed:', err);
+      }
+    })());
+    return;
+  }
+
+  // Default tap: focus or open the Today screen.
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of all) {
+      if (client.url.includes('habit-rpg')) {
+        await client.focus();
+        return;
+      }
+    }
+    await self.clients.openWindow('./');
+  })());
 });
 
 self.addEventListener('fetch', (event) => {
