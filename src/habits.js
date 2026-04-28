@@ -13,6 +13,7 @@ import {
   priorMissedComeback,
   SAFETY_DAYS,
 } from './streaks.js';
+import { computeJarTrigger } from './jar.js';
 import {
   todayString,
   localDateString,
@@ -129,10 +130,15 @@ export async function setCompletion(habitId, dateStr, status) {
     throw new Error('Invalid status: ' + status);
   }
   const db = await getDB();
-  const tx = db.transaction(['habits', 'completions', 'userState'], 'readwrite');
+  const tx = db.transaction(
+    ['habits', 'completions', 'userState', 'jars', 'jarDeposits'],
+    'readwrite',
+  );
   const habitsStore = tx.objectStore('habits');
   const completionsStore = tx.objectStore('completions');
   const userStateStore = tx.objectStore('userState');
+  const jarsStore = tx.objectStore('jars');
+  const depositsStore = tx.objectStore('jarDeposits');
 
   const habit = await habitsStore.get(habitId);
   if (!habit) {
@@ -218,9 +224,64 @@ export async function setCompletion(habitId, dateStr, status) {
     }
   }
 
+  // Phase 5: jar trigger. Only fires on insert/switch where the resulting
+  // streak is higher than before (positive crossings of the rule's
+  // multiple). Forward-only — undo does not refund a jar deposit, since
+  // the deposit represents money the user committed to set aside.
+  let jarDeposit = null;
+  let jarFunded = false;
+  if (resultRow && resultRow.status !== 'missed') {
+    const jars = await jarsStore.getAll();
+    const jar = jars.find((j) => j.linkedHabitId === habitId);
+    if (jar) {
+      // Dedup: if a deposit already exists for (jarId, dateStr), skip.
+      const existingDep = await depositsStore.index('jarId-date').get([jar.id, dateStr]);
+      if (!existingDep) {
+        const allDeposits = await depositsStore.getAll();
+        // We need a "previous" streak — the streak BEFORE this completion
+        // landed. We computed prevStreak above only in the insert/switch
+        // branch; recompute defensively.
+        const tempByDate = new Map(habitCompletions.map((c) => [c.date, c]));
+        if (existing) tempByDate.set(dateStr, existing);
+        else tempByDate.delete(dateStr);
+        const beforeStreak = streakAsOf(habit, tempByDate, dateStr);
+        const owed = computeJarTrigger(habit, beforeStreak, newStreak, jar, allDeposits);
+        if (owed > 0) {
+          const dep = {
+            id: newId(),
+            jarId: jar.id,
+            amount: owed,
+            triggeredByStreak: newStreak,
+            date: dateStr,
+            recordedAt: Date.now(),
+            confirmedState: 'pending',
+            confirmedAmount: null,
+            confirmedAt: null,
+          };
+          await depositsStore.put(dep);
+          jar.recordedBalance = (jar.recordedBalance || 0) + owed;
+          if (jar.recordedBalance >= jar.targetAmount) {
+            jar.recordedBalance = jar.targetAmount;
+            jarFunded = true;
+          }
+          await jarsStore.put(jar);
+          jarDeposit = dep;
+        }
+      }
+    }
+  }
+
   await tx.done;
 
-  return { row: resultRow, coinDelta, milestone, comebackApplied, newStreak };
+  return {
+    row: resultRow,
+    coinDelta,
+    milestone,
+    comebackApplied,
+    newStreak,
+    jarDeposit,
+    jarFunded,
+  };
 }
 
 // Cap how far back the very-first rollover will reach for an existing

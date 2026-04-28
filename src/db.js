@@ -5,14 +5,14 @@
 import { openDB } from 'https://cdn.jsdelivr.net/npm/idb@8/+esm';
 
 const DB_NAME = 'habit-rpg';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let _dbPromise = null;
 
 export function getDB() {
   if (!_dbPromise) {
     _dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion) {
+      upgrade(db, oldVersion, _newVersion, tx) {
         if (oldVersion < 1) {
           const habits = db.createObjectStore('habits', { keyPath: 'id' });
           habits.createIndex('archived', 'archived');
@@ -26,6 +26,19 @@ export function getDB() {
           db.createObjectStore('jars', { keyPath: 'id' });
           const deposits = db.createObjectStore('jarDeposits', { keyPath: 'id' });
           deposits.createIndex('jarId', 'jarId');
+        }
+        if (oldVersion < 2) {
+          // Phase 5: add a (jarId, date) unique index so we can dedupe
+          // deposits per completion-date and find pending deposits for the
+          // Confirm Transfers modal without a full scan. `date` is the
+          // completion date that triggered the deposit (YYYY-MM-DD).
+          const deposits = tx.objectStore('jarDeposits');
+          if (!deposits.indexNames.contains('jarId-date')) {
+            deposits.createIndex('jarId-date', ['jarId', 'date'], { unique: true });
+          }
+          if (!deposits.indexNames.contains('confirmedState')) {
+            deposits.createIndex('confirmedState', 'confirmedState');
+          }
         }
       },
       blocked() {

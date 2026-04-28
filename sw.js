@@ -2,7 +2,7 @@
 // Strategy: cache the shell on install. Network-first for navigations,
 // cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v8';
+const CACHE_NAME = 'habit-rpg-v9';
 const SHELL = [
   './',
   './index.html',

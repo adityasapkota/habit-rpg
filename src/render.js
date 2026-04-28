@@ -9,6 +9,7 @@ import {
   localDateString,
 } from './habits.js';
 import { streakAsOf } from './streaks.js';
+import { getActiveJar, listPendingDeposits, listJarDeposits } from './jar.js';
 import { getUserState } from './db.js';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -49,12 +50,133 @@ export async function renderToday(root, callbacks) {
     wrap.appendChild(list);
   }
 
+  // Active jar card (Phase 5). Single jar in v1.
+  const jar = await getActiveJar();
+  if (jar) {
+    const pending = await listPendingDeposits(jar.id);
+    wrap.appendChild(jarCard(jar, pending, callbacks));
+  }
+
   // One-shot swap: no flash of empty content during async work.
   root.replaceChildren(wrap);
   updateCoinPill(userState.coinBalance);
 }
 
-export function renderAddHabit(root, callbacks) {
+function jarCard(jar, pending, callbacks) {
+  const card = el('div', 'rounded-xl bg-slate-800 border border-slate-700 p-4 space-y-2');
+
+  const head = el('div', 'flex items-baseline justify-between');
+  head.appendChild(el('span', 'text-base font-medium text-slate-100', jar.name));
+  const status = jar.paused
+    ? el('span', 'text-xs text-amber-400', 'paused')
+    : jar.recordedBalance >= jar.targetAmount
+      ? el('span', 'text-xs text-emerald-400', 'funded')
+      : el('span', 'text-xs text-slate-500', 'active');
+  head.appendChild(status);
+  card.appendChild(head);
+
+  const fmt = (n) => `${jar.currency}${Math.round(n)}`;
+  const ratio = jar.targetAmount > 0 ? Math.min(1, jar.recordedBalance / jar.targetAmount) : 0;
+  const bar = el('div', 'h-2 rounded-full bg-slate-900 overflow-hidden');
+  const fill = el('div', 'h-full bg-emerald-500');
+  fill.style.width = `${Math.round(ratio * 100)}%`;
+  bar.appendChild(fill);
+  card.appendChild(bar);
+
+  card.appendChild(el('p', 'text-xs text-slate-400',
+    `Recorded ${fmt(jar.recordedBalance)} / Target ${fmt(jar.targetAmount)} · Confirmed ${fmt(jar.confirmedBalance)}`));
+
+  const actions = el('div', 'flex gap-2 pt-1');
+  if (pending.length > 0) {
+    const confirmBtn = el('button', 'flex-1 rounded bg-emerald-500 text-slate-900 text-xs font-semibold py-1.5');
+    confirmBtn.type = 'button';
+    confirmBtn.textContent = `Confirm transfers (${pending.length})`;
+    confirmBtn.addEventListener('click', () => callbacks.onOpenConfirm(jar));
+    actions.appendChild(confirmBtn);
+  }
+  const pauseBtn = el('button', 'flex-1 rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs py-1.5');
+  pauseBtn.type = 'button';
+  pauseBtn.textContent = jar.paused ? 'Resume' : 'Pause';
+  pauseBtn.addEventListener('click', () => callbacks.onTogglePause(jar));
+  actions.appendChild(pauseBtn);
+  card.appendChild(actions);
+
+  return card;
+}
+
+// Confirm Transfers modal. `jar` + `deposits` array (pending only).
+// callbacks.onResolve(depositId, state, partialAmount) per row,
+// callbacks.onClose() for the close button.
+export function renderConfirmTransfers(root, jar, deposits, callbacks) {
+  const wrap = el('div', 'space-y-4');
+
+  const head = el('div', 'flex items-center justify-between');
+  head.appendChild(el('h2', 'text-lg font-semibold', `Confirm: ${jar.name}`));
+  const close = el('button', 'text-slate-400 hover:text-slate-100 text-sm');
+  close.type = 'button';
+  close.textContent = 'Done';
+  close.addEventListener('click', () => callbacks.onClose());
+  head.appendChild(close);
+  wrap.appendChild(head);
+
+  if (deposits.length === 0) {
+    wrap.appendChild(el('p', 'text-slate-400 text-sm', 'No pending transfers.'));
+  } else {
+    const list = el('div', 'space-y-3');
+    for (const dep of deposits) {
+      list.appendChild(confirmRow(jar, dep, callbacks));
+    }
+    wrap.appendChild(list);
+  }
+
+  root.replaceChildren(wrap);
+}
+
+function confirmRow(jar, dep, callbacks) {
+  const card = el('div', 'rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-2');
+  const headLine = el('div', 'flex items-baseline justify-between');
+  headLine.appendChild(el('span', 'text-sm font-medium text-slate-100',
+    `${jar.currency}${Math.round(dep.amount)}`));
+  headLine.appendChild(el('span', 'text-xs text-slate-500',
+    `triggered by ${dep.triggeredByStreak}-day streak · ${dep.date}`));
+  card.appendChild(headLine);
+
+  const buttons = el('div', 'flex gap-2');
+  const transferred = el('button', 'flex-1 rounded bg-emerald-500 text-slate-900 text-xs font-medium py-1.5');
+  transferred.type = 'button';
+  transferred.textContent = 'Transferred';
+  transferred.addEventListener('click', () => callbacks.onResolve(dep.id, 'transferred'));
+  buttons.appendChild(transferred);
+
+  const partialBtn = el('button', 'flex-1 rounded bg-sky-500 text-slate-900 text-xs font-medium py-1.5');
+  partialBtn.type = 'button';
+  partialBtn.textContent = 'Partial';
+  partialBtn.addEventListener('click', () => {
+    const v = prompt(`Partial amount for ${jar.currency}${dep.amount}?`, '0');
+    if (v == null) return;
+    const num = Number(v);
+    if (!Number.isFinite(num) || num < 0 || num > dep.amount) {
+      alert('Enter a number between 0 and ' + dep.amount);
+      return;
+    }
+    callbacks.onResolve(dep.id, 'partial', num);
+  });
+  buttons.appendChild(partialBtn);
+
+  const skip = el('button', 'flex-1 rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs py-1.5');
+  skip.type = 'button';
+  skip.textContent = 'Skipped';
+  skip.addEventListener('click', () => callbacks.onResolve(dep.id, 'skipped'));
+  buttons.appendChild(skip);
+
+  card.appendChild(buttons);
+  return card;
+}
+
+// callbacks: onCancel, onSave({habit fields, jar fields or null})
+// `existingJar` — if a jar already exists in v1, we hide the inline jar
+// form (one jar per user) and don't allow re-linking.
+export function renderAddHabit(root, callbacks, { existingJar = null } = {}) {
   const form = el('form', 'space-y-5');
 
   const header = el('div', 'flex items-center justify-between');
@@ -70,6 +192,19 @@ export function renderAddHabit(root, callbacks) {
   form.appendChild(field('Schedule', scheduleControl()));
   form.appendChild(field('Reminder time (optional)', timeInput('reminderTime')));
   form.appendChild(field('Minimum version', textInput('minimumVersion', { required: true, placeholder: 'e.g. 1 push-up', maxLength: 80 })));
+
+  // Phase 5: optional savings jar. Only available when no jar exists yet
+  // (v1 cap). When a jar exists, we show a small note pointing the user
+  // at the jar that's already running.
+  let jarSection = null;
+  if (!existingJar) {
+    jarSection = jarFormSection();
+    form.appendChild(jarSection);
+  } else {
+    const note = el('div', 'rounded-lg border border-slate-700 bg-slate-800 p-3 text-xs text-slate-400');
+    note.appendChild(el('span', '', `Savings jar "${existingJar.name}" is already linked to another habit. v1 supports one jar.`));
+    form.appendChild(note);
+  }
 
   const errorBox = el('p', 'text-rose-400 text-sm hidden');
   errorBox.dataset.role = 'error';
@@ -89,10 +224,26 @@ export function renderAddHabit(root, callbacks) {
     const customDays = Array.from(form.querySelectorAll('input[name="customDay"]:checked'))
       .map((i) => Number(i.value));
     const reminderTime = form.querySelector('input[name="reminderTime"]').value || null;
+
+    let jar = null;
+    if (jarSection) {
+      const enabled = form.querySelector('input[name="jarEnabled"]')?.checked;
+      if (enabled) {
+        jar = {
+          name: form.querySelector('input[name="jarName"]').value,
+          targetAmount: form.querySelector('input[name="jarTarget"]').value,
+          currency: form.querySelector('select[name="jarCurrency"]').value,
+          streakLength: form.querySelector('input[name="jarStreakLength"]').value,
+          amount: form.querySelector('input[name="jarAmount"]').value,
+          monthlyCap: form.querySelector('input[name="jarMonthlyCap"]').value || null,
+        };
+      }
+    }
+
     save.disabled = true;
     cancel.disabled = true;
     try {
-      await callbacks.onSave({ name, schedule, customDays, reminderTime, minimumVersion });
+      await callbacks.onSave({ name, schedule, customDays, reminderTime, minimumVersion, jar });
     } catch (err) {
       errorBox.textContent = err.message || String(err);
       errorBox.classList.remove('hidden');
@@ -103,6 +254,68 @@ export function renderAddHabit(root, callbacks) {
 
   // One-shot swap.
   root.replaceChildren(form);
+}
+
+function jarFormSection() {
+  const wrap = el('fieldset', 'space-y-3 rounded-lg border border-slate-700 bg-slate-800 p-3');
+  const legend = el('legend', 'flex items-center gap-2 px-1 text-sm text-slate-300');
+  const enableInput = document.createElement('input');
+  enableInput.type = 'checkbox';
+  enableInput.name = 'jarEnabled';
+  enableInput.id = 'jar-enabled';
+  enableInput.className = 'rounded';
+  legend.appendChild(enableInput);
+  const lbl = el('label', 'cursor-pointer', 'Link to a savings jar (optional)');
+  lbl.htmlFor = 'jar-enabled';
+  legend.appendChild(lbl);
+  wrap.appendChild(legend);
+
+  const inner = el('div', 'space-y-3 hidden');
+  inner.dataset.role = 'jarFields';
+
+  inner.appendChild(field('Jar name',
+    textInput('jarName', { placeholder: 'e.g. Mac Studio', maxLength: 60 })));
+
+  const targetRow = el('div', 'grid grid-cols-3 gap-2');
+  const currencySelect = document.createElement('select');
+  currencySelect.name = 'jarCurrency';
+  currencySelect.className = 'rounded-lg bg-slate-900 border border-slate-700 px-2 py-2 text-sm';
+  for (const c of ['$', '₹', '€', '£']) {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    currencySelect.appendChild(opt);
+  }
+  targetRow.appendChild(field('Currency', currencySelect));
+  const targetInput = numberInput('jarTarget', { placeholder: '1000' });
+  const targetCol = field('Target amount', targetInput);
+  targetCol.classList.add('col-span-2');
+  targetRow.appendChild(targetCol);
+  inner.appendChild(targetRow);
+
+  const ruleRow = el('div', 'grid grid-cols-2 gap-2');
+  ruleRow.appendChild(field('Every N-day streak', numberInput('jarStreakLength', { placeholder: '7' })));
+  ruleRow.appendChild(field('Deposit amount', numberInput('jarAmount', { placeholder: '500' })));
+  inner.appendChild(ruleRow);
+
+  inner.appendChild(field('Monthly cap (optional)', numberInput('jarMonthlyCap', { placeholder: 'leave blank for no cap' })));
+
+  wrap.appendChild(inner);
+
+  enableInput.addEventListener('change', () => {
+    inner.classList.toggle('hidden', !enableInput.checked);
+  });
+
+  return wrap;
+}
+
+function numberInput(name, opts = {}) {
+  const i = el('input', 'w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 focus:border-emerald-500 outline-none');
+  i.type = 'number';
+  i.name = name;
+  i.min = '0';
+  if (opts.placeholder) i.placeholder = opts.placeholder;
+  return i;
 }
 
 // ---------- helpers ----------

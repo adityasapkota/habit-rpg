@@ -2,7 +2,20 @@
 // Owns SW registration, screen routing, and top-level event handlers.
 import { ensureUserState, resetAllData } from './db.js';
 import { createHabit, setCompletion, rolloverMissed, todayString } from './habits.js';
-import { renderToday, renderAddHabit, renderReminderBanner, showToast } from './render.js';
+import {
+  renderToday,
+  renderAddHabit,
+  renderReminderBanner,
+  renderConfirmTransfers,
+  showToast,
+} from './render.js';
+import {
+  getActiveJar,
+  listPendingDeposits,
+  createJar,
+  setJarPaused,
+  confirmDeposit,
+} from './jar.js';
 import {
   isNotificationSupported,
   currentPermission,
@@ -46,7 +59,7 @@ async function refreshToday() {
         // terminal user decision. Cancel any pending OS reminder so the
         // user doesn't get nudged about a habit they just dispatched.
         await cancelForHabit(habitId, todayString());
-        // Re-render first so the streak/coin UI is current before the toast.
+        // Re-render first so the streak/coin/jar UI is current before toasts.
         await refreshToday();
         if (result.comebackApplied) {
           showToast('💪 Welcome back! +25 coins comeback bonus', { tone: 'emerald' });
@@ -57,13 +70,75 @@ async function refreshToday() {
             { tone: 'emerald' }
           );
         }
+        if (result.jarDeposit) {
+          showToast(
+            `🏦 Set aside ${formatJarAmount(result.jarDeposit)} for your jar`,
+            { tone: 'emerald' }
+          );
+        }
+        if (result.jarFunded) {
+          showToast('🎯 Jar funded! Your reward is fully saved.', { tone: 'emerald' });
+        }
       } catch (err) {
         console.error('[app] completion failed:', err);
         showToast(err.message || 'Could not save', { tone: 'amber' });
       }
     },
+    onOpenConfirm: (jar) => {
+      showConfirmTransfers(jar).catch((err) => {
+        console.error('[app] open confirm failed:', err);
+        showToast('Could not open transfers: ' + err.message, { tone: 'amber' });
+      });
+    },
+    onTogglePause: async (jar) => {
+      try {
+        await setJarPaused(jar.id, !jar.paused);
+        await refreshToday();
+        showToast(jar.paused ? 'Jar resumed' : 'Jar paused', { tone: 'amber' });
+      } catch (err) {
+        console.error('[app] toggle pause failed:', err);
+        showToast('Could not toggle: ' + err.message, { tone: 'amber' });
+      }
+    },
   });
   await refreshReminderBanner();
+}
+
+function formatJarAmount(deposit) {
+  // We don't have currency on the deposit row directly; pull from active
+  // jar at call time. Falls back to plain number on miss.
+  // Best-effort, no IDB hit blocking the toast — the next refreshToday
+  // already shows the correct currency in the jar card.
+  return String(deposit.amount);
+}
+
+async function showConfirmTransfers(jar) {
+  showScreen('confirm');
+  await renderConfirmModal(jar);
+}
+
+async function renderConfirmModal(jar) {
+  const deposits = await listPendingDeposits(jar.id);
+  renderConfirmTransfers(screens.confirm, jar, deposits, {
+    onResolve: async (depositId, state, partialAmount) => {
+      try {
+        await confirmDeposit(depositId, state, partialAmount);
+        const fresh = await getActiveJar();
+        if (fresh) await renderConfirmModal(fresh);
+        else {
+          showScreen('today');
+          await refreshToday();
+        }
+      } catch (err) {
+        console.error('[app] confirm failed:', err);
+        showToast('Could not confirm: ' + err.message, { tone: 'amber' });
+      }
+    },
+    onClose: async () => {
+      showScreen('today');
+      await refreshToday();
+    },
+  });
 }
 
 async function refreshReminderBanner() {
@@ -129,6 +204,7 @@ async function maybeRolloverAfterResume() {
 
 async function showAddHabit() {
   showScreen('addHabit');
+  const existingJar = await getActiveJar();
   renderAddHabit(screens.addHabit, {
     onCancel: async () => {
       showScreen('today');
@@ -136,6 +212,18 @@ async function showAddHabit() {
     },
     onSave: async (data) => {
       const habit = await createHabit(data);
+      // Phase 5: optionally create the linked jar in the same flow. Only
+      // available when there isn't already a jar (single-jar v1).
+      if (data.jar && !existingJar) {
+        try {
+          await createJar({ ...data.jar, linkedHabitId: habit.id });
+        } catch (err) {
+          // Jar create failure shouldn't roll back the habit — surface as
+          // a toast but keep the habit so the user doesn't lose work.
+          console.error('[app] jar create failed:', err);
+          showToast('Habit saved. Jar create failed: ' + err.message, { tone: 'amber' });
+        }
+      }
       // First habit created with a reminder time triggers the permission
       // prompt. We don't block save on the answer — the in-app banner
       // fallback works either way.
@@ -156,7 +244,7 @@ async function showAddHabit() {
       showScreen('today');
       await refreshToday();
     },
-  });
+  }, { existingJar });
 }
 
 fab.addEventListener('click', () => {
