@@ -53,8 +53,13 @@ fab.addEventListener('click', () => {
 
 settingsBtn.addEventListener('click', async () => {
   if (!confirm('Reset all data? This cannot be undone.')) return;
-  await resetAllData();
-  location.reload();
+  try {
+    await resetAllData();
+    location.reload();
+  } catch (err) {
+    console.error('[app] reset failed:', err);
+    alert('Reset failed: ' + err.message);
+  }
 });
 
 if ('serviceWorker' in navigator) {

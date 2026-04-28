@@ -73,11 +73,13 @@ export async function resetAllData() {
     } catch {}
     _dbPromise = null;
   }
-  await new Promise((resolve) => {
+  await new Promise((resolve, reject) => {
     const req = indexedDB.deleteDatabase(DB_NAME);
     req.onsuccess = () => resolve();
-    req.onerror = () => resolve();
-    req.onblocked = () => resolve();
+    req.onerror = () => reject(new Error('Database delete failed.'));
+    req.onblocked = () => reject(new Error(
+      'Reset blocked: another tab has the app open. Close it and try again.'
+    ));
   });
 }
 

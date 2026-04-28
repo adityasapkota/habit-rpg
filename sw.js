@@ -2,7 +2,7 @@
 // Strategy: cache the shell on install. Network-first for navigations,
 // cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v3';
+const CACHE_NAME = 'habit-rpg-v4';
 const SHELL = [
   './',
   './index.html',
@@ -27,16 +27,14 @@ const CDN_URLS = [
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    await cache.addAll(SHELL);
-    for (const url of CDN_URLS) {
-      try {
-        const req = new Request(url, { mode: 'cors', credentials: 'omit' });
-        const res = await fetch(req);
-        if (res && res.ok) await cache.put(req, res);
-      } catch (err) {
-        console.warn('[sw] failed to cache CDN module:', url, err);
-      }
-    }
+    const cdnRequests = CDN_URLS.map((url) =>
+      new Request(url, { mode: 'cors', credentials: 'omit' })
+    );
+    // Atomic precache: if any required asset (local or CDN) fails, install
+    // fails and the new SW does not activate. The browser will retry on the
+    // next visit, which is correct: a partial cache would silently break
+    // offline reload of layout (Tailwind) or the DB layer (idb).
+    await cache.addAll([...SHELL, ...cdnRequests]);
   })());
   self.skipWaiting();
 });

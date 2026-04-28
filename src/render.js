@@ -4,7 +4,7 @@
 import {
   listHabits,
   getHabitsScheduledForDate,
-  getCompletionForDate,
+  getCompletionsForDate,
   todayString,
   localDateString,
 } from './habits.js';
@@ -20,14 +20,15 @@ const ACTIONS = [
 ];
 
 export async function renderToday(root, callbacks) {
-  root.replaceChildren();
-
+  // Fetch everything first, then swap the DOM atomically. This avoids the
+  // empty-flash that happens if you replaceChildren() before awaiting.
   const userState = await getUserState();
-  updateCoinPill(userState.coinBalance);
 
   const date = todayString();
   const allHabits = await listHabits();
   const scheduled = await getHabitsScheduledForDate(date);
+  const todayCompletions = await getCompletionsForDate(date);
+  const completionByHabitId = new Map(todayCompletions.map((c) => [c.habitId, c]));
 
   const wrap = el('div', 'space-y-5');
   wrap.appendChild(el('p', 'text-slate-400 text-sm', 'Showing up today.'));
@@ -40,23 +41,22 @@ export async function renderToday(root, callbacks) {
     wrap.appendChild(el('h2', 'text-slate-100 text-base font-medium pt-2', "Today's habits"));
     const list = el('div', 'space-y-3');
     for (const habit of scheduled) {
-      const completion = await getCompletionForDate(habit.id, date);
-      list.appendChild(habitCard(habit, completion, callbacks));
+      list.appendChild(habitCard(habit, completionByHabitId.get(habit.id) || null, callbacks));
     }
     wrap.appendChild(list);
   }
 
-  root.appendChild(wrap);
+  // One-shot swap: no flash of empty content during async work.
+  root.replaceChildren(wrap);
+  updateCoinPill(userState.coinBalance);
 }
 
 export function renderAddHabit(root, callbacks) {
-  root.replaceChildren();
-
   const form = el('form', 'space-y-5');
 
   const header = el('div', 'flex items-center justify-between');
   header.appendChild(el('h2', 'text-lg font-semibold', 'Add habit'));
-  const cancel = el('button', 'text-slate-400 hover:text-slate-100 text-sm');
+  const cancel = el('button', 'text-slate-400 hover:text-slate-100 text-sm disabled:opacity-40');
   cancel.type = 'button';
   cancel.textContent = 'Cancel';
   cancel.addEventListener('click', () => callbacks.onCancel());
@@ -79,6 +79,7 @@ export function renderAddHabit(root, callbacks) {
 
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    if (save.disabled) return;
     const name = form.querySelector('input[name="name"]').value;
     const minimumVersion = form.querySelector('input[name="minimumVersion"]').value;
     const schedule = form.querySelector('input[name="schedule"]:checked')?.value;
@@ -86,16 +87,19 @@ export function renderAddHabit(root, callbacks) {
       .map((i) => Number(i.value));
     const reminderTime = form.querySelector('input[name="reminderTime"]').value || null;
     save.disabled = true;
+    cancel.disabled = true;
     try {
       await callbacks.onSave({ name, schedule, customDays, reminderTime, minimumVersion });
     } catch (err) {
       errorBox.textContent = err.message || String(err);
       errorBox.classList.remove('hidden');
       save.disabled = false;
+      cancel.disabled = false;
     }
   });
 
-  root.appendChild(form);
+  // One-shot swap.
+  root.replaceChildren(form);
 }
 
 // ---------- helpers ----------
@@ -116,6 +120,10 @@ function emptyFirstHabit() {
   const card = el('div', 'rounded-xl bg-slate-800 border border-slate-700 p-6 text-center mt-4');
   card.appendChild(el('p', 'text-slate-200 text-lg font-medium', 'Add your first habit'));
   card.appendChild(el('p', 'text-slate-400 text-sm mt-2', 'Tap the green + button to start.'));
+  // Arrow pointing toward the FAB (bottom-right). aria-hidden — purely visual.
+  const arrow = el('div', 'text-emerald-400 text-3xl mt-4 pr-2 text-right select-none', '↘');
+  arrow.setAttribute('aria-hidden', 'true');
+  card.appendChild(arrow);
   return card;
 }
 
@@ -146,9 +154,16 @@ function habitCard(habit, completion, callbacks) {
   card.appendChild(el('p', 'text-xs text-slate-400 mb-3', `min: ${habit.minimumVersion}`));
 
   const buttons = el('div', 'flex gap-2');
+  const allButtons = [];
   for (const action of ACTIONS) {
     const isActive = completion && completion.status === action.status;
-    const base = 'flex-1 rounded-lg py-2 text-sm font-medium border transition select-none';
+    // Spec (02_DESIGN_DAY1.md L131): "Buttons disable after one is tapped;
+    // tapping the active one again undoes it." So once a completion exists,
+    // only the active button stays interactive. To switch, the user undoes
+    // first.
+    const isDisabledByCompletion = !!completion && !isActive;
+
+    const base = 'flex-1 rounded-lg py-2 text-sm font-medium border transition select-none disabled:opacity-40 disabled:cursor-not-allowed';
     const activeStyle = action.accent === 'emerald'
       ? 'bg-emerald-500 text-slate-900 border-emerald-500'
       : action.accent === 'sky'
@@ -162,8 +177,26 @@ function habitCard(habit, completion, callbacks) {
     const btn = el('button', `${base} ${isActive ? activeStyle : idleStyle}`);
     btn.type = 'button';
     btn.textContent = action.label;
-    btn.addEventListener('click', () => callbacks.onCompletion(habit.id, action.status));
+    btn.disabled = isDisabledByCompletion;
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      // Single-flight: lock all 3 buttons in this card during the write so
+      // rapid double-taps cannot race into a unique-index collision on
+      // (habitId, date) or interleave switch + delete.
+      for (const b of allButtons) b.disabled = true;
+      try {
+        await callbacks.onCompletion(habit.id, action.status);
+        // refreshToday in the caller will rebuild this card.
+      } catch (err) {
+        console.error('[habit] completion write failed:', err);
+        // Re-enable per the pre-click state so the user can retry.
+        for (const b of allButtons) b.disabled = b.dataset.preDisabled === 'true';
+        alert('Could not save: ' + (err.message || err));
+      }
+    });
+    btn.dataset.preDisabled = String(isDisabledByCompletion);
     buttons.appendChild(btn);
+    allButtons.push(btn);
   }
   card.appendChild(buttons);
   return card;
