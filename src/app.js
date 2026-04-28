@@ -42,12 +42,10 @@ async function refreshToday() {
     onCompletion: async (habitId, status) => {
       try {
         const result = await setCompletion(habitId, todayString(), status);
-        // Cancel any pending OS notification when the user takes a real
-        // action (Done or Min). Skip cancel for 'missed' since that's just
-        // a reset — the user may still want the next reminder.
-        if (status === 'completed' || status === 'minimum') {
-          await cancelForHabit(habitId, todayString());
-        }
+        // Any explicit same-day action — Done, Min, or Skip — is a
+        // terminal user decision. Cancel any pending OS reminder so the
+        // user doesn't get nudged about a habit they just dispatched.
+        await cancelForHabit(habitId, todayString());
         // Re-render first so the streak/coin UI is current before the toast.
         await refreshToday();
         if (result.comebackApplied) {
@@ -110,15 +108,20 @@ function startBannerPolling() {
 async function maybeRolloverAfterResume() {
   try {
     const today = todayString();
-    if (lastRenderedDate && today !== lastRenderedDate) {
+    const dateChanged = lastRenderedDate && today !== lastRenderedDate;
+    if (dateChanged) {
       await rolloverMissed();
-      await rescheduleAllReminders();
       await refreshToday();
     } else {
-      // Even on same-day resumes, refresh the banner so a passed reminder
-      // shows up promptly without waiting for the polling tick.
+      // Same-day resume: refresh the banner so a passed reminder shows up
+      // promptly without waiting for the polling tick.
       await refreshReminderBanner();
     }
+    // Re-prime OS reminders on every resume, not just date-changing ones.
+    // After a one-shot trigger fires today, the next-occurrence still
+    // needs to be scheduled — `scheduleForHabit` handles "today already
+    // dispatched" by walking forward to the next scheduled day.
+    rescheduleAllReminders().catch((err) => console.warn('[app] resume reschedule:', err));
   } catch (err) {
     console.error('[app] resume rollover failed:', err);
   }
