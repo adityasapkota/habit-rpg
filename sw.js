@@ -2,7 +2,7 @@
 // Strategy: cache the shell on install. Network-first for navigations,
 // cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v5';
+const CACHE_NAME = 'habit-rpg-v6';
 const SHELL = [
   './',
   './index.html',
@@ -21,22 +21,38 @@ const SHELL = [
   './icons/icon-512.png',
 ];
 
-const CDN_URLS = [
-  'https://cdn.jsdelivr.net/npm/idb@8/+esm',
-  'https://cdn.tailwindcss.com',
+// CDN modules. Each entry picks the request mode that the CDN actually
+// supports for cross-origin caching:
+//   - jsdelivr serves CORS-enabled responses, so we cache as `cors`.
+//   - cdn.tailwindcss.com 302-redirects to a versioned URL that lacks
+//     Access-Control-Allow-Origin headers. A `cors` request blocks the
+//     script in the page or fails cache.put() because of the redirect URL
+//     mismatch. We use `no-cors` and accept opaque responses; the browser
+//     still executes opaque scripts from cache fine.
+const CDN_REQUESTS = [
+  { url: 'https://cdn.jsdelivr.net/npm/idb@8/+esm', mode: 'cors' },
+  { url: 'https://cdn.tailwindcss.com',              mode: 'no-cors' },
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    const cdnRequests = CDN_URLS.map((url) =>
-      new Request(url, { mode: 'cors', credentials: 'omit' })
-    );
-    // Atomic precache: if any required asset (local or CDN) fails, install
-    // fails and the new SW does not activate. The browser will retry on the
-    // next visit, which is correct: a partial cache would silently break
-    // offline reload of layout (Tailwind) or the DB layer (idb).
-    await cache.addAll([...SHELL, ...cdnRequests]);
+    // Local shell is required — install fails if it can't cache. CDNs are
+    // best-effort: a transient CDN failure (or a Tailwind redirect quirk)
+    // must NOT prevent the SW from activating, otherwise users get stuck
+    // on the previous SW. The fetch handler retries CDN URLs on demand.
+    await cache.addAll(SHELL);
+    for (const { url, mode } of CDN_REQUESTS) {
+      try {
+        const req = new Request(url, { mode, credentials: 'omit' });
+        const res = await fetch(req);
+        if (res && (res.ok || res.type === 'opaque')) {
+          await cache.put(req, res);
+        }
+      } catch (err) {
+        console.warn('[sw] failed to precache CDN module:', url, err);
+      }
+    }
   })());
   self.skipWaiting();
 });
@@ -79,7 +95,11 @@ self.addEventListener('fetch', (event) => {
     caches.match(req).then((cached) => {
       if (cached) return cached;
       return fetch(req).then((res) => {
-        if (res && res.status === 200 && (res.type === 'basic' || res.type === 'cors')) {
+        // Cache same-origin and CORS responses. Also cache opaque (no-cors)
+        // for cross-origin scripts whose CDNs do not send CORS headers
+        // (e.g. cdn.tailwindcss.com): the browser still executes opaque
+        // scripts loaded from cache, which keeps offline reload working.
+        if (res && (res.status === 200 || res.type === 'opaque')) {
           const copy = res.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
         }
