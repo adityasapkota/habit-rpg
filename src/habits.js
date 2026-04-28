@@ -7,7 +7,12 @@
 // days as `missed` so streak math sees a correct chain.
 import { getDB, newId } from './db.js';
 import { baseCoinsFor, COMEBACK_BONUS } from './coins.js';
-import { streakAsOf, crossedMilestone, priorMissedComeback } from './streaks.js';
+import {
+  streakAsOf,
+  crossedMilestone,
+  priorMissedComeback,
+  SAFETY_DAYS,
+} from './streaks.js';
 import {
   todayString,
   localDateString,
@@ -85,11 +90,17 @@ export async function getCompletionsForDate(dateStr) {
   return db.getAllFromIndex('completions', 'date', dateStr);
 }
 
-// Builds `Map<habitId, Map<dateStr, completionRow>>` in one pass.
-// Used by renderToday to compute per-card streaks without N+1 queries.
+// Builds `Map<habitId, Map<dateStr, completionRow>>` in one pass, bounded
+// to the last SAFETY_DAYS days — that's the maximum window streakAsOf can
+// walk, and unbounded scans get expensive once the user has accumulated
+// thousands of rows.
 export async function getAllCompletionsByHabit() {
   const db = await getDB();
-  const all = await db.getAll('completions');
+  const earliest = parseLocalDateString(todayString());
+  earliest.setDate(earliest.getDate() - SAFETY_DAYS);
+  const earliestStr = localDateString(earliest);
+  const all = await db.getAllFromIndex('completions', 'date',
+    IDBKeyRange.lowerBound(earliestStr));
   const byHabit = new Map();
   for (const c of all) {
     let inner = byHabit.get(c.habitId);
@@ -137,11 +148,15 @@ export async function setCompletion(habitId, dateStr, status) {
     throw new Error('Habit is not scheduled on this date.');
   }
 
-  // Load full per-habit completion history. The habitId-date index gives us
-  // a cheap range scan — Map keyed by date for streak math + comeback check.
+  // Load only the last SAFETY_DAYS days of this habit's completions —
+  // that's the full window streakAsOf and priorMissedComeback can walk.
+  // Unbounded scans here would slow down every toggle as data accrues.
+  const earliest = parseLocalDateString(dateStr);
+  earliest.setDate(earliest.getDate() - SAFETY_DAYS);
+  const earliestStr = localDateString(earliest);
   const habitCompletions = await completionsStore
     .index('habitId-date')
-    .getAll(IDBKeyRange.bound([habitId, '0000-00-00'], [habitId, '9999-99-99']));
+    .getAll(IDBKeyRange.bound([habitId, earliestStr], [habitId, '9999-99-99']));
   const byDate = new Map(habitCompletions.map((c) => [c.date, c]));
 
   const existing = byDate.get(dateStr);
@@ -263,7 +278,14 @@ export async function rolloverMissed() {
   const db = await getDB();
   const tx = db.transaction('completions', 'readwrite');
   const store = tx.objectStore('completions');
-  const idx = store.index('habitId-date');
+
+  // Pre-fetch every completion in the backfill window in one indexed
+  // range call, then check membership via Set. Avoids days*habits
+  // sequential getFromIndex calls inside the loop.
+  const existingInRange = await store
+    .index('date')
+    .getAll(IDBKeyRange.bound(lastOpen, today, false, true)); // [lastOpen, today)
+  const existingKeys = new Set(existingInRange.map((c) => `${c.habitId}|${c.date}`));
 
   const cursor = parseLocalDateString(lastOpen);
   const todayDate = parseLocalDateString(today);
@@ -276,8 +298,7 @@ export async function rolloverMissed() {
       const createdDay = new Date(created.getFullYear(), created.getMonth(), created.getDate());
       if (cursor < createdDay) continue;
       if (!isHabitScheduledOn(habit, cursor)) continue;
-      const existing = await idx.get([habit.id, ds]);
-      if (existing) continue;
+      if (existingKeys.has(`${habit.id}|${ds}`)) continue;
       await store.put({
         id: newId(),
         habitId: habit.id,

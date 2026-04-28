@@ -13,13 +13,23 @@
 
 import { isHabitScheduledOn, parseLocalDateString, localDateString } from './dates.js';
 
-const SAFETY_DAYS = 400;
+// Cover 90×7 = 630 calendar days for a once-weekly custom habit reaching the
+// 90-day milestone, with margin for missing weeks.
+export const SAFETY_DAYS = 1200;
+
+function createdDayOf(habit) {
+  const epoch = Number(habit.createdAt) || 0;
+  const d = new Date(epoch);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
 
 export function streakAsOf(habit, completionsByDate, anchorDateStr) {
   const cursor = parseLocalDateString(anchorDateStr);
+  const createdDay = createdDayOf(habit);
   let streak = 0;
   let walked = 0;
   while (walked++ < SAFETY_DAYS) {
+    if (cursor < createdDay) break;
     if (isHabitScheduledOn(habit, cursor)) {
       const ds = localDateString(cursor);
       const c = completionsByDate.get(ds);
@@ -61,18 +71,22 @@ export function crossedMilestone(prevStreak, newStreak) {
   return null;
 }
 
-// True iff the most-recent scheduled day strictly before `dateStr` has
-// status === 'missed'. Walks backwards over scheduled-only days. Used by
-// the comeback-bonus check.
+// True iff the most-recent scheduled day strictly before `dateStr` is
+// effectively missed. Walks backwards over scheduled-only days, bounded by
+// the habit's createdDay. A past scheduled day with no row counts as missed
+// — rollover may not have run yet (mid-day app open, tests). Used by the
+// comeback-bonus check.
 export function priorMissedComeback(habit, completionsByDate, dateStr) {
   const cursor = parseLocalDateString(dateStr);
   cursor.setDate(cursor.getDate() - 1);
+  const createdDay = createdDayOf(habit);
   let walked = 0;
   while (walked++ < SAFETY_DAYS) {
+    if (cursor < createdDay) return false;
     if (isHabitScheduledOn(habit, cursor)) {
       const ds = localDateString(cursor);
       const c = completionsByDate.get(ds);
-      if (!c) return false;
+      if (!c) return true; // absence on a past scheduled day = missed
       return c.status === 'missed';
     }
     cursor.setDate(cursor.getDate() - 1);
