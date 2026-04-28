@@ -4,15 +4,18 @@ Live status of the 24-hour build. Updated by Claude Code after every meaningful 
 
 ## Current
 
-- **Phase:** 5 (Savings jar) — COMPLETE; both Codex and Gemini APPROVED on third review pass. Next phase: 6 (polish + harden).
-- **Phase 1:** COMPLETE — Codex APPROVED, deploy green
-- **Phase 2:** COMPLETE — Codex + Gemini APPROVED
-- **Phase 3:** COMPLETE — Codex + Gemini APPROVED
-- **Phase 4:** COMPLETE — Codex + Gemini APPROVED
-- **Last updated:** 2026-04-28 09:00 UTC
+- **v1 shipped.** All six phases COMPLETE and APPROVED by both Codex and Gemini.
+- **Last updated:** 2026-04-28 09:15 UTC
 - **Live URL:** https://adityasapkota.github.io/habit-rpg/
-- **Last deployed commit:** `c80385e` (Phase 5 + strict integer validation + disabled hidden jar fields; SW cache `habit-rpg-v9`)
-- **Notes:** User wants zero permission pauses + dual-reviewer (Codex + Gemini) at every phase boundary. Hotfix `d5e0d0a` reverted an over-aggressive `crossorigin="anonymous"` on the Tailwind script after the user reported the live site rendering as plain text in Chrome (the CDN's redirect target lacks CORS headers — see memory `reference_tailwind_play_cdn_no_cors.md`).
+- **Last deployed commit:** `13c2b55` (Phase 6 polish + harden; SW cache `habit-rpg-v10`)
+- **Phase 1:** COMPLETE — Codex APPROVED, deploy green (commit `0a58e29`)
+- **Phase 2:** COMPLETE — Codex + Gemini APPROVED (commit `c0f9549`)
+- **Phase 3:** COMPLETE — Codex + Gemini APPROVED (commit `e5a1913`)
+- **Phase 4:** COMPLETE — Codex + Gemini APPROVED (commit `f2ebfda`)
+- **Phase 5:** COMPLETE — Codex + Gemini APPROVED (commit `c80385e`)
+- **Phase 6:** COMPLETE — Codex + Gemini APPROVED FOR V1 SHIP (commit `13c2b55`)
+- **Build process:** every phase ended with BOTH a Codex bug review and a Gemini bug review. Findings synthesized, fixed, redeployed, and re-reviewed until both passed. Phases 2–6 each took 2–3 review rounds. Hotfix `d5e0d0a` reverted an over-aggressive `crossorigin="anonymous"` on the Tailwind script after the user reported the live site rendering as plain text in Chrome (the CDN's redirect target lacks CORS headers — see memory `reference_tailwind_play_cdn_no_cors.md`).
+- **What's documented:** `KNOWN_ISSUES.md` carries the V1 limitations (best-effort web reminders, single-jar v1, no edit/settings UI, V2 roadmap stub). README rewritten with feature summary + Android/iOS install instructions.
 
 ## Phase log
 
@@ -66,10 +69,11 @@ Live status of the 24-hour build. Updated by Claude Code after every meaningful 
 - [x] `app.js`: `showConfirmTransfers` switches to confirm screen and re-renders after each resolve; `onTogglePause` toast; jar-create errors re-throw so the Add Habit form re-opens with the message; currency-aware deposit toast
 - [x] Three review passes — final at `c80385e` with both reviewers APPROVED
 
-### Phase 6 — Polish + harden
+### Phase 6 — Polish + harden ✅
 - [x] Phase 6 dual review against the 10 v1 acceptance criteria from `02_DESIGN_DAY1.md`
 - [x] Real defects fixed: milestone bonus re-fire on streak reset (now persisted per-habit in `milestonesAwarded`); jar atomicity (permission prompt + jar input validation lifted before habit save); idb CDN promoted to required atomic precache (Tailwind stays best-effort); midnight refresh added to the 60s polling timer; Confirm modal auto-closes on empty; `prompt()` replaced with an inline partial-amount input; Confirm-Transfers button now follows the spec ("recorded > confirmed", not "pending > 0"); cache.put failures in fetch handler swallowed to avoid unhandled rejections
 - [x] PWA polish: iOS apple-mobile-web-app-* meta tags; jar number inputs get `min="1" step="1"` to match the strict integer validator
 - [x] `KNOWN_ISSUES.md` shipped (best-effort reminders, single-jar limit, no habit edit, no settings UI, V2 roadmap stub)
 - [x] README rewritten with feature summary + install instructions for Android/iOS
 - [x] SW cache `habit-rpg-v10`
+- [x] Both Codex and Gemini APPROVED FOR V1 SHIP on commit `13c2b55`. v1 shipped.
