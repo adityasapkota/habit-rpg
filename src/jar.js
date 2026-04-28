@@ -18,14 +18,16 @@ import { getDB, newId, setUserState as _setUserState } from './db.js';
 // caller supplies the deposits already recorded so monthly cap math is
 // honest. Returns 0 when nothing should fire.
 //
-//   habit:   the habit row
-//   prev:    streak value BEFORE the new completion
-//   next:    streak value AFTER the new completion
-//   jar:     the jar (or null if no jar linked)
+//   habit:    the habit row
+//   prev:     streak value BEFORE the new completion
+//   next:     streak value AFTER the new completion
+//   jar:      the jar (or null if no jar linked)
 //   deposits: every existing jarDeposit (filter is cheap; the v1 store is
 //             single-jar so this is small)
-//   now:     Date used for monthly-cap windowing (defaults to "right now")
-export function computeJarTrigger(habit, prev, next, jar, deposits, now = new Date()) {
+//   triggerDate: 'YYYY-MM-DD' of the completion that caused the trigger.
+//             The monthly cap is keyed off this date so backfills land in
+//             the right calendar month, not whatever month it is right now.
+export function computeJarTrigger(habit, prev, next, jar, deposits, triggerDate) {
   if (!jar) return 0;
   if (jar.paused) return 0;
   if (jar.linkedHabitId !== habit.id) return 0;
@@ -44,9 +46,15 @@ export function computeJarTrigger(habit, prev, next, jar, deposits, now = new Da
   let owed = amount * crossed;
 
   if (Number.isFinite(jar.monthlyCap) && jar.monthlyCap > 0) {
-    const ym = monthKey(now);
+    const ym = triggerDate ? triggerDate.slice(0, 7) : monthKey(new Date());
     const monthTotal = deposits
-      .filter((d) => d.jarId === jar.id && monthKey(new Date(d.recordedAt)) === ym)
+      .filter((d) => {
+        if (d.jarId !== jar.id) return false;
+        const depYm = d.date
+          ? d.date.slice(0, 7)
+          : monthKey(new Date(d.recordedAt));
+        return depYm === ym;
+      })
       .reduce((s, d) => s + (Number(d.amount) || 0), 0);
     const remaining = jar.monthlyCap - monthTotal;
     if (remaining <= 0) return 0;
@@ -81,8 +89,18 @@ export async function listJarDeposits(jarId) {
 }
 
 export async function listPendingDeposits(jarId) {
-  const all = await listJarDeposits(jarId);
-  return all.filter((d) => d.confirmedState === 'pending');
+  const db = await getDB();
+  const pending = await db.getAllFromIndex('jarDeposits', 'confirmedState', 'pending');
+  return pending.filter((d) => d.jarId === jarId);
+}
+
+// Validates jar fields. Schema (02_DESIGN_DAY1.md) treats amounts as
+// integers; we round-down rather than reject decimals so a user typing
+// 100.5 doesn't get confused, but we reject zero/negative/NaN.
+function toPositiveInt(value, label) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${label} must be a positive whole number.`);
+  return n;
 }
 
 export async function createJar({
@@ -96,19 +114,25 @@ export async function createJar({
 }) {
   const cleanName = (name || '').trim();
   if (!cleanName) throw new Error('Jar name is required.');
-  const target = Number(targetAmount);
-  if (!Number.isFinite(target) || target <= 0) throw new Error('Target amount must be positive.');
-  const N = Number(streakLength);
-  if (!Number.isFinite(N) || N <= 0) throw new Error('Streak length must be positive.');
-  const amt = Number(amount);
-  if (!Number.isFinite(amt) || amt <= 0) throw new Error('Deposit amount must be positive.');
-  const cap = monthlyCap == null || monthlyCap === '' ? null : Number(monthlyCap);
-  if (cap != null && (!Number.isFinite(cap) || cap <= 0)) {
-    throw new Error('Monthly cap must be positive or empty.');
+  if (!linkedHabitId) throw new Error('Jar must be linked to a habit.');
+  const target = toPositiveInt(targetAmount, 'Target amount');
+  const N = toPositiveInt(streakLength, 'Streak length');
+  const amt = toPositiveInt(amount, 'Deposit amount');
+  let cap = null;
+  if (monthlyCap != null && monthlyCap !== '') {
+    cap = toPositiveInt(monthlyCap, 'Monthly cap');
   }
   const cleanCurrency = (currency || '$').trim() || '$';
-  if (!linkedHabitId) throw new Error('Jar must be linked to a habit.');
 
+  const db = await getDB();
+  // Single-jar v1 invariant: enforce inside a tx so a concurrent tab
+  // can't slip in a second jar between the existence check and the put.
+  const tx = db.transaction('jars', 'readwrite');
+  const existing = await tx.objectStore('jars').getAll();
+  if (existing.length > 0) {
+    await tx.done.catch(() => {});
+    throw new Error('Only one savings jar is supported in v1.');
+  }
   const jar = {
     id: newId(),
     name: cleanName,
@@ -122,9 +146,8 @@ export async function createJar({
     paused: false,
     createdAt: Date.now(),
   };
-
-  const db = await getDB();
-  await db.put('jars', jar);
+  await tx.objectStore('jars').put(jar);
+  await tx.done;
   return jar;
 }
 

@@ -224,13 +224,15 @@ export async function setCompletion(habitId, dateStr, status) {
     }
   }
 
-  // Phase 5: jar trigger. Only fires on insert/switch where the resulting
-  // streak is higher than before (positive crossings of the rule's
-  // multiple). Forward-only — undo does not refund a jar deposit, since
-  // the deposit represents money the user committed to set aside.
+  // Phase 5: jar trigger. Only fires when the user marks this day as
+  // `completed` — Min/Skip don't move the streak counter and shouldn't
+  // record money toward the jar even if a switch from missed→minimum
+  // accidentally re-extends the streak chain. Forward-only — undo does
+  // not refund a jar deposit.
   let jarDeposit = null;
   let jarFunded = false;
-  if (resultRow && resultRow.status !== 'missed') {
+  let jarCurrency = null;
+  if (resultRow && resultRow.status === 'completed') {
     const jars = await jarsStore.getAll();
     const jar = jars.find((j) => j.linkedHabitId === habitId);
     if (jar) {
@@ -245,7 +247,7 @@ export async function setCompletion(habitId, dateStr, status) {
         if (existing) tempByDate.set(dateStr, existing);
         else tempByDate.delete(dateStr);
         const beforeStreak = streakAsOf(habit, tempByDate, dateStr);
-        const owed = computeJarTrigger(habit, beforeStreak, newStreak, jar, allDeposits);
+        const owed = computeJarTrigger(habit, beforeStreak, newStreak, jar, allDeposits, dateStr);
         if (owed > 0) {
           const dep = {
             id: newId(),
@@ -266,6 +268,7 @@ export async function setCompletion(habitId, dateStr, status) {
           }
           await jarsStore.put(jar);
           jarDeposit = dep;
+          jarCurrency = jar.currency;
         }
       }
     }
@@ -281,6 +284,7 @@ export async function setCompletion(habitId, dateStr, status) {
     newStreak,
     jarDeposit,
     jarFunded,
+    jarCurrency,
   };
 }
 

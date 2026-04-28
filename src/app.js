@@ -71,12 +71,16 @@ async function refreshToday() {
           );
         }
         if (result.jarDeposit) {
+          const cur = result.jarCurrency || '';
           showToast(
-            `🏦 Set aside ${formatJarAmount(result.jarDeposit)} for your jar`,
+            `🏦 Set aside ${cur}${result.jarDeposit.amount} for your jar`,
             { tone: 'emerald' }
           );
         }
         if (result.jarFunded) {
+          // The persistent funded banner inside the jar card (rendered by
+          // refreshToday above) is the durable signal; this toast is just
+          // the moment-of-funding nudge.
           showToast('🎯 Jar funded! Your reward is fully saved.', { tone: 'emerald' });
         }
       } catch (err) {
@@ -102,14 +106,6 @@ async function refreshToday() {
     },
   });
   await refreshReminderBanner();
-}
-
-function formatJarAmount(deposit) {
-  // We don't have currency on the deposit row directly; pull from active
-  // jar at call time. Falls back to plain number on miss.
-  // Best-effort, no IDB hit blocking the toast — the next refreshToday
-  // already shows the correct currency in the jar card.
-  return String(deposit.amount);
 }
 
 async function showConfirmTransfers(jar) {
@@ -211,17 +207,19 @@ async function showAddHabit() {
       await refreshToday();
     },
     onSave: async (data) => {
+      // Phase 5: validate jar fields BEFORE creating the habit so a
+      // bad jar doesn't leave a dangling habit and a closed form.
+      // createJar validates everything except linkedHabitId, so we run
+      // it after createHabit but rethrow on failure to keep the form open.
       const habit = await createHabit(data);
-      // Phase 5: optionally create the linked jar in the same flow. Only
-      // available when there isn't already a jar (single-jar v1).
       if (data.jar && !existingJar) {
         try {
           await createJar({ ...data.jar, linkedHabitId: habit.id });
         } catch (err) {
-          // Jar create failure shouldn't roll back the habit — surface as
-          // a toast but keep the habit so the user doesn't lose work.
-          console.error('[app] jar create failed:', err);
-          showToast('Habit saved. Jar create failed: ' + err.message, { tone: 'amber' });
+          // Re-throw so renderAddHabit's submit handler shows the error
+          // in the form and re-enables Save / Cancel. The habit is still
+          // saved (best-effort), but the user can amend the jar inputs.
+          throw err;
         }
       }
       // First habit created with a reminder time triggers the permission

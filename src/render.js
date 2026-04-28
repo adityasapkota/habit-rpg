@@ -65,6 +65,16 @@ export async function renderToday(root, callbacks) {
 function jarCard(jar, pending, callbacks) {
   const card = el('div', 'rounded-xl bg-slate-800 border border-slate-700 p-4 space-y-2');
 
+  if (jar.recordedBalance >= jar.targetAmount) {
+    // Persistent funded banner inside the jar card. Survives reloads, so
+    // the user keeps seeing the celebration until they confirm transfers
+    // and the spec's "celebration banner" requirement is met.
+    const cel = el('div',
+      'rounded-lg bg-emerald-500 text-slate-900 text-sm font-semibold p-2 text-center',
+      '🎯 Jar funded! Your reward is fully saved.');
+    card.appendChild(cel);
+  }
+
   const head = el('div', 'flex items-baseline justify-between');
   head.appendChild(el('span', 'text-base font-medium text-slate-100', jar.name));
   const status = jar.paused
@@ -274,7 +284,7 @@ function jarFormSection() {
   inner.dataset.role = 'jarFields';
 
   inner.appendChild(field('Jar name',
-    textInput('jarName', { placeholder: 'e.g. Mac Studio', maxLength: 60 })));
+    textInput('jarName', { placeholder: 'e.g. Mac Studio', maxLength: 60, required: true })));
 
   const targetRow = el('div', 'grid grid-cols-3 gap-2');
   const currencySelect = document.createElement('select');
