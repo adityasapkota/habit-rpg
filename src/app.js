@@ -1,9 +1,8 @@
 // Habit RPG bootstrap.
 // Owns SW registration, screen routing, and top-level event handlers.
-// Phase 2: Today + Add Habit. Phase 3+ extends without changing this shell.
 import { ensureUserState, resetAllData } from './db.js';
-import { createHabit, setCompletion, todayString } from './habits.js';
-import { renderToday, renderAddHabit } from './render.js';
+import { createHabit, setCompletion, rolloverMissed, todayString } from './habits.js';
+import { renderToday, renderAddHabit, showToast } from './render.js';
 
 const screens = {
   today: document.getElementById('screen-today'),
@@ -23,8 +22,18 @@ function showScreen(name) {
 async function refreshToday() {
   await renderToday(screens.today, {
     onCompletion: async (habitId, status) => {
-      await setCompletion(habitId, todayString(), status);
+      const result = await setCompletion(habitId, todayString(), status);
+      // Re-render first so the streak/coin UI is current before the toast.
       await refreshToday();
+      if (result.comebackApplied) {
+        showToast('💪 Welcome back! +25 coins comeback bonus', { tone: 'emerald' });
+      }
+      if (result.milestone) {
+        showToast(
+          `🎉 ${result.milestone.length}-day streak! +${result.milestone.bonus} coins`,
+          { tone: 'emerald' }
+        );
+      }
     },
   });
 }
@@ -74,6 +83,10 @@ if ('serviceWorker' in navigator) {
 (async function bootstrap() {
   try {
     await ensureUserState();
+    // Mark any past scheduled days that ended without a completion as
+    // `missed` before we render. This keeps streak math honest even if the
+    // user has been away for several days.
+    await rolloverMissed();
     showScreen('today');
     await refreshToday();
   } catch (err) {

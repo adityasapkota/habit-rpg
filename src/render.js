@@ -4,10 +4,11 @@
 import {
   listHabits,
   getHabitsScheduledForDate,
-  getCompletionsForDate,
+  getAllCompletionsByHabit,
   todayString,
   localDateString,
 } from './habits.js';
+import { streakAsOf } from './streaks.js';
 import { getUserState } from './db.js';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -27,8 +28,7 @@ export async function renderToday(root, callbacks) {
   const date = todayString();
   const allHabits = await listHabits();
   const scheduled = await getHabitsScheduledForDate(date);
-  const todayCompletions = await getCompletionsForDate(date);
-  const completionByHabitId = new Map(todayCompletions.map((c) => [c.habitId, c]));
+  const completionsByHabit = await getAllCompletionsByHabit();
 
   const wrap = el('div', 'space-y-5');
   wrap.appendChild(el('p', 'text-slate-400 text-sm', 'Showing up today.'));
@@ -41,7 +41,10 @@ export async function renderToday(root, callbacks) {
     wrap.appendChild(el('h2', 'text-slate-100 text-base font-medium pt-2', "Today's habits"));
     const list = el('div', 'space-y-3');
     for (const habit of scheduled) {
-      list.appendChild(habitCard(habit, completionByHabitId.get(habit.id) || null, callbacks));
+      const habitMap = completionsByHabit.get(habit.id) || new Map();
+      const todayCompletion = habitMap.get(date) || null;
+      const streak = streakAsOf(habit, habitMap, date);
+      list.appendChild(habitCard(habit, todayCompletion, streak, callbacks));
     }
     wrap.appendChild(list);
   }
@@ -116,6 +119,32 @@ function updateCoinPill(coins) {
   if (pill) pill.textContent = `🪙 ${coins}`;
 }
 
+// Lightweight, self-removing toast. Stacks vertically if multiple are queued
+// (one per call). aria-live polite so screen readers can read milestones.
+let toastStackOffset = 0;
+export function showToast(message, { tone = 'amber' } = {}) {
+  const toneClass = tone === 'emerald'
+    ? 'bg-emerald-500 text-slate-900'
+    : 'bg-amber-500 text-slate-900';
+  const toast = el('div',
+    `fixed left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 text-sm font-medium shadow-lg ${toneClass}`);
+  toast.style.top = `${72 + toastStackOffset}px`;
+  toast.setAttribute('role', 'status');
+  toast.setAttribute('aria-live', 'polite');
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  const offsetForThis = 48;
+  toastStackOffset += offsetForThis;
+  setTimeout(() => {
+    toast.style.transition = 'opacity 200ms';
+    toast.style.opacity = '0';
+    setTimeout(() => {
+      toast.remove();
+      toastStackOffset = Math.max(0, toastStackOffset - offsetForThis);
+    }, 220);
+  }, 2800);
+}
+
 function emptyFirstHabit() {
   const card = el('div', 'rounded-xl bg-slate-800 border border-slate-700 p-6 text-center mt-4');
   card.appendChild(el('p', 'text-slate-200 text-lg font-medium', 'Add your first habit'));
@@ -143,11 +172,16 @@ async function scheduledTomorrow() {
   return card;
 }
 
-function habitCard(habit, completion, callbacks) {
+function habitCard(habit, completion, streak, callbacks) {
   const card = el('div', 'rounded-xl bg-slate-800 border border-slate-700 p-4');
 
   const titleRow = el('div', 'flex items-baseline justify-between');
-  titleRow.appendChild(el('span', 'text-base font-medium text-slate-100', habit.name));
+  const titleLeft = el('div', 'flex items-baseline gap-2');
+  titleLeft.appendChild(el('span', 'text-base font-medium text-slate-100', habit.name));
+  if (streak > 0) {
+    titleLeft.appendChild(el('span', 'text-xs text-amber-300', `🔥 ${streak}`));
+  }
+  titleRow.appendChild(titleLeft);
   titleRow.appendChild(el('span', 'text-xs text-slate-500', scheduleSummary(habit)));
   card.appendChild(titleRow);
 
