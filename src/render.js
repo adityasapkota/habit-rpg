@@ -178,9 +178,13 @@ function habitCard(habit, completion, streak, callbacks) {
   const titleRow = el('div', 'flex items-baseline justify-between');
   const titleLeft = el('div', 'flex items-baseline gap-2');
   titleLeft.appendChild(el('span', 'text-base font-medium text-slate-100', habit.name));
-  if (streak > 0) {
-    titleLeft.appendChild(el('span', 'text-xs text-amber-300', `🔥 ${streak}`));
-  }
+  // Always show the streak badge — the spec exit criteria explicitly tests
+  // "streak resets to 0", and an invisible 0 hides the user's most
+  // important feedback signal.
+  const streakClass = streak > 0
+    ? 'text-xs text-amber-300'
+    : 'text-xs text-slate-500';
+  titleLeft.appendChild(el('span', streakClass, `🔥 ${streak}`));
   titleRow.appendChild(titleLeft);
   titleRow.appendChild(el('span', 'text-xs text-slate-500', scheduleSummary(habit)));
   card.appendChild(titleRow);

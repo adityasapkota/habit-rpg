@@ -129,6 +129,14 @@ export async function setCompletion(habitId, dateStr, status) {
     throw new Error('Habit not found');
   }
 
+  // Phase 3 guard: never award a completion for a day a habit isn't
+  // scheduled. Prevents stale UI or direct calls from minting coins on
+  // weekday/custom off-days while streakAsOf would ignore the row anyway.
+  if (!isHabitScheduledOn(habit, parseLocalDateString(dateStr))) {
+    await tx.done.catch(() => {});
+    throw new Error('Habit is not scheduled on this date.');
+  }
+
   // Load full per-habit completion history. The habitId-date index gives us
   // a cheap range scan — Map keyed by date for streak math + comeback check.
   const habitCompletions = await completionsStore
@@ -200,33 +208,63 @@ export async function setCompletion(habitId, dateStr, status) {
   return { row: resultRow, coinDelta, milestone, comebackApplied, newStreak };
 }
 
-// Mark scheduled days from the user's last visit (exclusive) up to today
+// Cap how far back the very-first rollover will reach for an existing
+// install. Older missed days are written off rather than spammed.
+const ROLLOVER_BACKFILL_DAYS = 30;
+
+function setLastOpen(value) {
+  if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_OPEN_KEY, value);
+}
+
+// Mark scheduled days from the user's last visit (inclusive) up to today
 // (exclusive) as `missed` for any habit that did not get a completion on
 // that day. Stores the high-water-mark in localStorage so we don't re-run.
 //
 // Idempotent: if any day already has a completion row, leave it alone.
-// Returns the count of rows inserted.
+// All writes go through one IDB transaction so a closed-mid-rollover state
+// can never be partial. Returns the count of rows inserted.
 export async function rolloverMissed() {
   const today = todayString();
-  const lastOpen = (typeof localStorage !== 'undefined') ? localStorage.getItem(LAST_OPEN_KEY) : null;
+  const habits = await listHabits();
 
-  if (!lastOpen) {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_OPEN_KEY, today);
+  let lastOpen = (typeof localStorage !== 'undefined') ? localStorage.getItem(LAST_OPEN_KEY) : null;
+
+  // First-ever open: nothing to backfill.
+  if (!lastOpen && habits.length === 0) {
+    setLastOpen(today);
     return { marked: 0 };
   }
+
+  // First open that has habits but no high-water-mark: this is what
+  // happens when an existing user upgrades to a build that introduced
+  // rolloverMissed. Backfill from the oldest habit's creation day, capped
+  // at ROLLOVER_BACKFILL_DAYS so we don't punish someone who let the app
+  // sit unused for months.
+  if (!lastOpen) {
+    const oldestEpoch = Math.min(...habits.map((h) => Number(h.createdAt) || Date.now()));
+    const oldest = new Date(oldestEpoch);
+    const oldestDay = new Date(oldest.getFullYear(), oldest.getMonth(), oldest.getDate());
+    const cap = parseLocalDateString(today);
+    cap.setDate(cap.getDate() - ROLLOVER_BACKFILL_DAYS);
+    lastOpen = localDateString(oldestDay > cap ? oldestDay : cap);
+  }
+
   if (lastOpen >= today) {
     // Same day or clock moved backwards — nothing to fill in.
-    if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_OPEN_KEY, today);
+    setLastOpen(today);
     return { marked: 0 };
   }
 
-  const habits = await listHabits();
   if (habits.length === 0) {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_OPEN_KEY, today);
+    setLastOpen(today);
     return { marked: 0 };
   }
 
   const db = await getDB();
+  const tx = db.transaction('completions', 'readwrite');
+  const store = tx.objectStore('completions');
+  const idx = store.index('habitId-date');
+
   const cursor = parseLocalDateString(lastOpen);
   const todayDate = parseLocalDateString(today);
   let marked = 0;
@@ -234,13 +272,13 @@ export async function rolloverMissed() {
   while (cursor < todayDate) {
     const ds = localDateString(cursor);
     for (const habit of habits) {
-      const created = new Date(habit.createdAt);
+      const created = new Date(Number(habit.createdAt) || 0);
       const createdDay = new Date(created.getFullYear(), created.getMonth(), created.getDate());
       if (cursor < createdDay) continue;
       if (!isHabitScheduledOn(habit, cursor)) continue;
-      const existing = await db.getFromIndex('completions', 'habitId-date', [habit.id, ds]);
+      const existing = await idx.get([habit.id, ds]);
       if (existing) continue;
-      await db.put('completions', {
+      await store.put({
         id: newId(),
         habitId: habit.id,
         date: ds,
@@ -253,6 +291,7 @@ export async function rolloverMissed() {
     cursor.setDate(cursor.getDate() + 1);
   }
 
-  if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_OPEN_KEY, today);
+  await tx.done;
+  setLastOpen(today);
   return { marked };
 }

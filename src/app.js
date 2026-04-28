@@ -19,23 +19,47 @@ function showScreen(name) {
   fab.classList.toggle('hidden', name !== 'today');
 }
 
+// Tracks the date the Today screen was last rendered for. If the device
+// crosses midnight while the PWA is suspended (mobile lock screen, app
+// switcher), we re-run rollover and re-render on resume so streak math
+// catches up without a full reload.
+let lastRenderedDate = null;
+
 async function refreshToday() {
+  lastRenderedDate = todayString();
   await renderToday(screens.today, {
     onCompletion: async (habitId, status) => {
-      const result = await setCompletion(habitId, todayString(), status);
-      // Re-render first so the streak/coin UI is current before the toast.
-      await refreshToday();
-      if (result.comebackApplied) {
-        showToast('💪 Welcome back! +25 coins comeback bonus', { tone: 'emerald' });
-      }
-      if (result.milestone) {
-        showToast(
-          `🎉 ${result.milestone.length}-day streak! +${result.milestone.bonus} coins`,
-          { tone: 'emerald' }
-        );
+      try {
+        const result = await setCompletion(habitId, todayString(), status);
+        // Re-render first so the streak/coin UI is current before the toast.
+        await refreshToday();
+        if (result.comebackApplied) {
+          showToast('💪 Welcome back! +25 coins comeback bonus', { tone: 'emerald' });
+        }
+        if (result.milestone) {
+          showToast(
+            `🎉 ${result.milestone.length}-day streak! +${result.milestone.bonus} coins`,
+            { tone: 'emerald' }
+          );
+        }
+      } catch (err) {
+        console.error('[app] completion failed:', err);
+        showToast(err.message || 'Could not save', { tone: 'amber' });
       }
     },
   });
+}
+
+async function maybeRolloverAfterResume() {
+  try {
+    const today = todayString();
+    if (lastRenderedDate && today !== lastRenderedDate) {
+      await rolloverMissed();
+      await refreshToday();
+    }
+  } catch (err) {
+    console.error('[app] resume rollover failed:', err);
+  }
 }
 
 async function showAddHabit() {
@@ -79,6 +103,15 @@ if ('serviceWorker' in navigator) {
       .catch((err) => console.error('[habit-rpg] sw error:', err));
   });
 }
+
+// Mobile PWAs commonly stay alive across midnight when the OS suspends and
+// resumes them rather than reloading. Re-run rollover whenever the page
+// becomes visible again or restores from the bfcache, so the streak and
+// "today's habits" view reflect the new local date.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') maybeRolloverAfterResume();
+});
+window.addEventListener('pageshow', maybeRolloverAfterResume);
 
 (async function bootstrap() {
   try {
