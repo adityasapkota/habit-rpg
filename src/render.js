@@ -120,8 +120,9 @@ function updateCoinPill(coins) {
 }
 
 // Render or remove the in-app reminder banner. `due` is the array returned
-// by dueRemindersToday(). `callbacks.onSnooze(habitId)` and
-// `callbacks.onDismiss()` wire the action buttons.
+// by dueRemindersToday() — each item carries `snoozesLeft`. Callbacks:
+//   onSnooze(due) — snooze every habit in the list (cap-aware)
+//   onDismiss(due) — dismiss every habit in the list for today
 export function renderReminderBanner(due, callbacks) {
   const existing = document.getElementById('reminder-banner');
   if (existing) existing.remove();
@@ -144,18 +145,22 @@ export function renderReminderBanner(due, callbacks) {
   }
 
   const actions = el('div', 'flex gap-2 mt-2');
+  const allCapped = due.every((d) => (d.snoozesLeft || 0) <= 0);
   const snooze = el('button',
-    'flex-1 rounded bg-amber-600 text-slate-100 text-xs font-medium py-1 hover:bg-amber-700 disabled:opacity-40');
+    'flex-1 rounded bg-amber-600 text-slate-100 text-xs font-medium py-1 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed');
   snooze.type = 'button';
-  snooze.textContent = 'Snooze 10 min';
-  snooze.addEventListener('click', () => callbacks.onSnooze(due));
+  snooze.textContent = allCapped ? 'Snooze cap reached' : 'Snooze 10 min';
+  snooze.disabled = allCapped;
+  if (!allCapped) {
+    snooze.addEventListener('click', () => callbacks.onSnooze(due));
+  }
   actions.appendChild(snooze);
 
   const dismiss = el('button',
     'flex-1 rounded bg-slate-800 text-slate-100 text-xs font-medium py-1 hover:bg-slate-700');
   dismiss.type = 'button';
   dismiss.textContent = 'Dismiss for today';
-  dismiss.addEventListener('click', () => callbacks.onDismiss());
+  dismiss.addEventListener('click', () => callbacks.onDismiss(due));
   actions.appendChild(dismiss);
   banner.appendChild(actions);
 

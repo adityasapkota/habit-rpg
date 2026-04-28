@@ -9,9 +9,10 @@ import {
   requestPermission,
   scheduleForHabit,
   cancelForHabit,
+  rescheduleAllReminders,
   dueRemindersToday,
   snoozeInApp,
-  dismissBannerForToday,
+  dismissForHabit,
 } from './notifications.js';
 
 const screens = {
@@ -72,18 +73,20 @@ async function refreshReminderBanner() {
     const due = await dueRemindersToday();
     renderReminderBanner(due, {
       onSnooze: (dueList) => {
-        let any = false;
+        let anySnoozed = false;
         for (const d of dueList) {
-          const remaining = snoozeInApp(d.habitId);
-          if (remaining >= 0) any = true;
-          if (remaining === 0) {
+          const { snoozed, remaining } = snoozeInApp(d.habitId);
+          if (snoozed) {
+            anySnoozed = true;
+            if (remaining === 0) showToast(`Last snooze for ${d.name}`, { tone: 'amber' });
+          } else {
             showToast(`Snooze cap reached for ${d.name}`, { tone: 'amber' });
           }
         }
-        if (any) refreshReminderBanner();
+        if (anySnoozed) refreshReminderBanner();
       },
-      onDismiss: () => {
-        dismissBannerForToday();
+      onDismiss: (dueList) => {
+        for (const d of dueList) dismissForHabit(d.habitId);
         renderReminderBanner([], {});
       },
     });
@@ -92,12 +95,29 @@ async function refreshReminderBanner() {
   }
 }
 
+let bannerTimer = null;
+function startBannerPolling() {
+  if (bannerTimer) clearInterval(bannerTimer);
+  // Poll every 60s while the document is visible so a reminder time that
+  // passes WITH the app already open still surfaces the banner.
+  bannerTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      refreshReminderBanner().catch((err) => console.warn('[app] poll banner:', err));
+    }
+  }, 60000);
+}
+
 async function maybeRolloverAfterResume() {
   try {
     const today = todayString();
     if (lastRenderedDate && today !== lastRenderedDate) {
       await rolloverMissed();
+      await rescheduleAllReminders();
       await refreshToday();
+    } else {
+      // Even on same-day resumes, refresh the banner so a passed reminder
+      // shows up promptly without waiting for the polling tick.
+      await refreshReminderBanner();
     }
   } catch (err) {
     console.error('[app] resume rollover failed:', err);
@@ -181,6 +201,11 @@ window.addEventListener('pageshow', maybeRolloverAfterResume);
     await rolloverMissed();
     showScreen('today');
     await refreshToday();
+    // Re-prime OS-level reminders for every habit with a reminderTime so
+    // they aren't one-shot at creation. No-op when permission isn't
+    // granted or the Triggers API isn't available.
+    rescheduleAllReminders().catch((err) => console.warn('[app] reschedule:', err));
+    startBannerPolling();
   } catch (err) {
     console.error('[app] bootstrap failed:', err);
     screens.today.textContent = 'Failed to start: ' + err.message;

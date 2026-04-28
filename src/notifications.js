@@ -15,14 +15,16 @@ import { todayString, parseLocalDateString, localDateString, isHabitScheduledOn 
 import { listHabits, getCompletionForDate } from './habits.js';
 import { setUserState } from './db.js';
 
-const MAX_SNOOZES_PER_DAY = 3;
+export const MAX_SNOOZES_PER_DAY = 3;
 
 const snoozeCountKey = (habitId, date) => `habit-rpg.snooze.${habitId}.${date}.count`;
 const snoozeUntilKey = (habitId, date) => `habit-rpg.snooze.${habitId}.${date}.until`;
-const dismissedKey = (date) => `habit-rpg.dismissed.${date}`;
+const dismissedKey   = (habitId, date) => `habit-rpg.dismissed.${date}.${habitId}`;
 
 export function isNotificationSupported() {
-  return typeof window !== 'undefined' && 'Notification' in window;
+  return typeof window !== 'undefined'
+    && 'Notification' in window
+    && typeof window.Notification.requestPermission === 'function';
 }
 
 export function hasTriggersApi() {
@@ -47,7 +49,11 @@ export async function requestPermission() {
   return result;
 }
 
-function notifTag(habitId, date) {
+// Stable per (habit, date) tag so the SW can find both the original and
+// every snoozed re-schedule for cancellation. The SW's notificationclick
+// handler always re-uses this exact tag for snooze rescheds, which makes
+// cancelForHabit(habitId, date) close the entire chain.
+export function notifTag(habitId, date) {
   return `habit-rpg-${habitId}-${date}`;
 }
 
@@ -94,6 +100,7 @@ export async function scheduleForHabit(habit) {
         date,
         name: habit.name,
         minimum: habit.minimumVersion,
+        snoozeCount: 0,
       },
       actions: [{ action: 'snooze', title: 'Snooze 10 min' }],
       // eslint-disable-next-line no-undef
@@ -106,12 +113,32 @@ export async function scheduleForHabit(habit) {
   }
 }
 
+// Schedule next-occurrence reminders for every active habit with a
+// reminderTime. Called at bootstrap, on resume, and after a completion
+// cancels today's reminder, so reminders aren't one-shot.
+export async function rescheduleAllReminders() {
+  if (!isNotificationSupported() || currentPermission() !== 'granted') return;
+  if (!hasTriggersApi()) return;
+  const habits = await listHabits();
+  for (const h of habits) {
+    if (!h.reminderTime) continue;
+    try { await scheduleForHabit(h); } catch (err) { console.warn('[notif] reschedule:', err); }
+  }
+}
+
 export async function cancelForHabit(habitId, date) {
   if (!('serviceWorker' in navigator)) return;
   try {
     const reg = await navigator.serviceWorker.ready;
     const tag = notifTag(habitId, date);
-    const notifs = await reg.getNotifications({ tag, includeTriggered: true });
+    let notifs;
+    try {
+      notifs = await reg.getNotifications({ tag, includeTriggered: true });
+    } catch {
+      // includeTriggered is not universally supported — fall back to the
+      // basic call so at least currently-displayed notifications close.
+      notifs = await reg.getNotifications({ tag });
+    }
     for (const n of notifs) n.close();
   } catch (err) {
     console.warn('[notif] cancel failed:', err);
@@ -120,13 +147,12 @@ export async function cancelForHabit(habitId, date) {
 
 // Build the list of in-app reminders that are currently due. A reminder is
 // due when: the habit is scheduled today, has a reminderTime, the clock is
-// past that time, the user hasn't already taken any non-missed action on
-// it today, and it isn't currently snoozed.
+// past that time, the user hasn't taken any action on it today, and it
+// isn't currently snoozed or dismissed. Each item carries `snoozesLeft` so
+// the renderer can disable the snooze button at the cap.
 export async function dueRemindersToday() {
   if (typeof localStorage === 'undefined') return [];
   const date = todayString();
-  if (localStorage.getItem(dismissedKey(date)) === '1') return [];
-
   const habits = await listHabits();
   const now = new Date();
   const todayDate = parseLocalDateString(date);
@@ -141,39 +167,49 @@ export async function dueRemindersToday() {
     target.setHours(hh, mm, 0, 0);
     if (now < target) continue;
 
+    if (localStorage.getItem(dismissedKey(habit.id, date)) === '1') continue;
+
     const snoozeUntil = Number(localStorage.getItem(snoozeUntilKey(habit.id, date)) || 0);
     if (snoozeUntil > now.getTime()) continue;
 
+    // Any same-day completion row (Done/Min/Skip-as-missed) means the user
+    // engaged with this habit today. The reminder has done its job — stop
+    // nudging until tomorrow.
     const completion = await getCompletionForDate(habit.id, date);
-    // A 'missed' row means the user hasn't actually engaged yet — keep nudging.
-    if (completion && completion.status !== 'missed') continue;
+    if (completion) continue;
 
+    const snoozeCount = Number(localStorage.getItem(snoozeCountKey(habit.id, date)) || 0);
     due.push({
       habitId: habit.id,
       name: habit.name,
       minimum: habit.minimumVersion,
       reminderTime: habit.reminderTime,
+      snoozesLeft: Math.max(0, MAX_SNOOZES_PER_DAY - snoozeCount),
     });
   }
   return due;
 }
 
-// Push the in-app banner ten minutes into the future. Returns the new
-// remaining-snoozes count (0 means cap reached and we did nothing).
+// Push the in-app banner ten minutes into the future for one habit.
+// Returns { snoozed, remaining } so the caller can distinguish "third
+// snooze just accepted" from "already at cap".
 export function snoozeInApp(habitId) {
-  if (typeof localStorage === 'undefined') return 0;
+  if (typeof localStorage === 'undefined') return { snoozed: false, remaining: 0 };
   const date = todayString();
   const cKey = snoozeCountKey(habitId, date);
   const uKey = snoozeUntilKey(habitId, date);
   const count = Number(localStorage.getItem(cKey) || 0);
-  if (count >= MAX_SNOOZES_PER_DAY) return 0;
+  if (count >= MAX_SNOOZES_PER_DAY) return { snoozed: false, remaining: 0 };
+  const newCount = count + 1;
   const until = Date.now() + 10 * 60 * 1000;
-  localStorage.setItem(cKey, String(count + 1));
+  localStorage.setItem(cKey, String(newCount));
   localStorage.setItem(uKey, String(until));
-  return MAX_SNOOZES_PER_DAY - (count + 1);
+  return { snoozed: true, remaining: MAX_SNOOZES_PER_DAY - newCount };
 }
 
-export function dismissBannerForToday() {
+// Suppress the banner for a specific habit until midnight. Other habits
+// stay in the rotation.
+export function dismissForHabit(habitId) {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(dismissedKey(todayString()), '1');
+  localStorage.setItem(dismissedKey(habitId, todayString()), '1');
 }

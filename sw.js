@@ -2,7 +2,7 @@
 // Strategy: cache the shell on install. Network-first for navigations,
 // cache-first for everything else (including the cross-origin idb CDN).
 
-const CACHE_NAME = 'habit-rpg-v7';
+const CACHE_NAME = 'habit-rpg-v8';
 const SHELL = [
   './',
   './index.html',
@@ -67,25 +67,41 @@ self.addEventListener('activate', (event) => {
 });
 
 // Notification interaction. Snooze action re-schedules a follow-up 10 min
-// later (Triggers API only — best effort). Tapping the body focuses an
-// existing app window or opens a new one.
+// later (Triggers API only — best effort) and respects the 3-snooze daily
+// cap by tracking the count in notification.data. Tapping the body focuses
+// an existing app window or opens a new one.
+const MAX_SNOOZES_PER_DAY = 3;
+
 self.addEventListener('notificationclick', (event) => {
   const notification = event.notification;
   const data = notification.data || {};
   const action = event.action;
   notification.close();
 
-  if (action === 'snooze' && data.habitId && typeof TimestampTrigger !== 'undefined') {
+  if (action === 'snooze' && data.habitId && typeof self.TimestampTrigger !== 'undefined') {
+    const newCount = (Number(data.snoozeCount) || 0) + 1;
+    if (newCount > MAX_SNOOZES_PER_DAY) {
+      // Cap reached — do nothing. The user already saw three reminders.
+      return;
+    }
     event.waitUntil((async () => {
       try {
-        await self.registration.showNotification(data.name || 'Habit reminder', {
+        const opts = {
           body: data.minimum ? `Time to: ${data.minimum}` : 'Reminder',
-          tag: `habit-rpg-${data.habitId}-${data.date}-snooze-${Date.now()}`,
-          data,
-          actions: [{ action: 'snooze', title: 'Snooze 10 min' }],
+          // Reuse the stable per-(habit, date) tag so cancelForHabit() can
+          // close the entire reminder chain (original + every snooze
+          // re-schedule) in one call.
+          tag: `habit-rpg-${data.habitId}-${data.date}`,
+          data: { ...data, snoozeCount: newCount },
           // eslint-disable-next-line no-undef
-          showTrigger: new TimestampTrigger(Date.now() + 10 * 60 * 1000),
-        });
+          showTrigger: new self.TimestampTrigger(Date.now() + 10 * 60 * 1000),
+        };
+        // Hide the snooze action once the user has used the last allowed
+        // snooze — they should tap the body or act in-app instead.
+        if (newCount < MAX_SNOOZES_PER_DAY) {
+          opts.actions = [{ action: 'snooze', title: 'Snooze 10 min' }];
+        }
+        await self.registration.showNotification(data.name || 'Habit reminder', opts);
       } catch (err) {
         console.warn('[sw] snooze schedule failed:', err);
       }
